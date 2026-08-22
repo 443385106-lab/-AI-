@@ -54,6 +54,7 @@ private:
     void pageSetup();
     void generateSmartBoard();
     void batchGenerateBoards();
+    void ocrSampleImage();
     void analyzeSampleLayout();
     void openTemplateLibrary();
     void saveCurrentAsTemplate();
