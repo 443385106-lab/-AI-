@@ -21,6 +21,7 @@ public:
     void setTool(Tool tool);
     QRectF pageRect() const { return m_pageRect; }
     void setPageRect(const QRectF &rect);
+    void setBleed(qreal units) { m_bleedUnits = qMax(0.0, units); viewport()->update(); }
     void setGridVisible(bool visible);
     void setSnapEnabled(bool enabled);
     void setFillColor(const QColor &color) { m_fillColor = color; }
@@ -60,6 +61,7 @@ private:
 
     Tool m_tool = Tool::Select;
     QRectF m_pageRect {100.0, 100.0, 800.0, 600.0};
+    qreal m_bleedUnits = 30.0;
     bool m_gridVisible = false;
     bool m_snapEnabled = true;
     qreal m_gridStep = 20.0;
