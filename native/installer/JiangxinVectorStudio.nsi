@@ -14,7 +14,6 @@ InstallDir "$PROGRAMFILES64\JiangxinVectorStudio"
 InstallDirRegKey HKLM "Software\JiangxinVectorStudio" "InstallDir"
 RequestExecutionLevel admin
 SetCompressor /SOLID lzma
-SetRegView 64
 ShowInstDetails show
 ShowUninstDetails show
 Icon "..\..\assets\app-icon.ico"
@@ -46,6 +45,7 @@ Function CloseRunningStudio
 FunctionEnd
 
 Function .onInit
+  SetRegView 64
   Call CloseRunningStudio
 FunctionEnd
 
@@ -56,6 +56,7 @@ Function un.CloseRunningStudio
 FunctionEnd
 
 Function un.onInit
+  SetRegView 64
   Call un.CloseRunningStudio
 FunctionEnd
 
