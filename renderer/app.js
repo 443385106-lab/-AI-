@@ -136,6 +136,21 @@ async function refreshTemplates(){const q=$('templateSearch').value.trim().toLow
 $('saveTemplate').onclick=async()=>{const name=$('templateName').value.trim()||$('title').value;await boardAPI.saveTemplate({name,industry:$('templateIndustry').value.trim()||$('industry').value,favorite:false,data:currentData({reference:''})});setStatus('模板已保存');refreshTemplates()};$('templateSearch').oninput=refreshTemplates;
 
 $('batchExport').onclick=async()=>{const formats=[...document.querySelectorAll('.batchFormat:checked')].map(x=>x.value);if(!formats.length)return setStatus('请至少选择一种批量格式');const source=aiBoards.length?aiBoards:[{title:$('title').value,body:$('body').value,theme:$('theme').value,recommended_width_cm:+$('width').value,recommended_height_cm:+$('height').value}];try{setStatus(`正在准备 ${source.length} 张批量文件…`);const items=source.slice(0,20).map(b=>{const d=currentData({title:b.title,body:b.body,theme:b.theme||$('theme').value,width:b.recommended_width_cm||+$('width').value,height:b.recommended_height_cm||+$('height').value,sign:$('company').value||$('sign').value,reference:''}),svg=makeSVG(d);return {title:b.title,svg,rasterSvg:makeSVG(d,{raster:true,dpi:d.dpi}),pdfHtml:pdfHtml(svg,d)}});const r=await boardAPI.batchExport({items,formats,cmyk:$('cmyk').checked});setStatus(r?`批量导出完成：${r.files.length}个文件，目录 ${r.directory}`:'已取消批量导出')}catch(e){setStatus('批量导出失败：'+e.message)}};
+function formatCorelResult(result){
+  if(result.preflight){const p=result.preflight;return [`印前预检：${p.pages}页 / ${p.shapes}个对象`,`文字对象：${p.text}　位图：${p.bitmaps}　低于300dpi：${p.lowResolutionBitmaps}`,`非CMYK均匀色/轮廓：${p.nonCMYKColors}　复杂填充：${p.complexFills}`,`文档分辨率：${p.documentDpi}dpi${p.minimumBitmapDpi?`　最低位图：${p.minimumBitmapDpi}dpi`:''}`,'',...p.warnings.map(x=>'• '+x)].join('\n')}
+  return [result.message,result.file?`文件：${result.file}`:'',result.programPath?`程序：${result.programPath}`:''].filter(Boolean).join('\n');
+}
+async function runCorelTool(action){
+  const buttons=[$('corelOpen'),...document.querySelectorAll('[data-corel-action]')],badge=$('corelBadge'),d=currentData();
+  try{
+    buttons.forEach(x=>x.disabled=true);badge.className='corel-badge busy';badge.textContent='处理中';$('corelResult').textContent='正在连接 CorelDRAW 2020（64-Bit）…';setStatus('正在执行 CorelDRAW 2020 专业联动…');
+    const raw=await boardAPI.corelTool({action,svg:makeSVG(d),title:d.title,pageWidthCM:d.width+d.bleed/5,pageHeightCM:d.height+d.bleed/5,dpi:d.dpi,bleedMM:d.bleed,cropMarks:d.cropMarks}),result=JSON.parse(raw);
+    if(result.cancelled){$('corelResult').textContent='已取消保存';setStatus('已取消CorelDRAW保存');return}
+    badge.className='corel-badge ok';badge.textContent='2020已连接';$('corelResult').textContent=formatCorelResult(result);setStatus(result.message||'CorelDRAW操作完成');
+  }catch(e){badge.className='corel-badge error';badge.textContent='连接失败';$('corelResult').textContent=e.message;setStatus('CorelDRAW操作失败：'+e.message)}finally{buttons.forEach(x=>x.disabled=false)}
+}
+$('corelOpen').onclick=()=>runCorelTool('Import');
+document.querySelectorAll('[data-corel-action]').forEach(button=>button.onclick=()=>runCorelTool(button.dataset.corelAction));
 $('corelTest').onclick=async()=>{try{$('corelResult').textContent='检测中…';const raw=await boardAPI.corelTest(),data=JSON.parse(raw);$('corelResult').textContent=data.map(x=>`${x.Version}：${x.CreateAndSave?'通过':'未通过'}（${x.Message}）`).join('\n')}catch(e){$('corelResult').textContent=e.message}};
 
 boardAPI.getAIConfig().then(c=>{if(c.endpoint)$('endpoint').value=c.endpoint;if(c.model)$('model').value=c.model;if(c.apiKey)$('apiKey').value=c.apiKey});refreshTemplates();if(!restoreDraft())render();recordHistory();updateUndoButtons();

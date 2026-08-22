@@ -71,6 +71,22 @@ ipcMain.handle('corel-test',async()=>{
   if(process.platform!=='win32')throw new Error('CorelDRAW兼容测试只能在Windows电脑运行');
   return runPS(join(__dirname,'scripts','test-corel-versions.ps1'));
 });
+ipcMain.handle('corel-tool',async(_,arg)=>{
+  if(process.platform!=='win32')throw new Error('CorelDRAW 2020专业联动只能在Windows电脑运行');
+  const action=arg?.action||'Detect',script=join(__dirname,'scripts','corel-2020-toolbox.ps1'),args=['-Action',action];
+  if(action==='Import'){
+    const temp=join(app.getPath('temp'),`corel-live-${Date.now()}.svg`);await writeFile(temp,arg.svg||'');
+    args.push('-InputPath',temp,'-PageWidthCM',String(arg.pageWidthCM||0),'-PageHeightCM',String(arg.pageHeightCM||0),'-Dpi',String(arg.dpi||300));
+  }
+  if(action==='SaveCDR'||action==='PublishPDF'){
+    const ext=action==='SaveCDR'?'cdr':'pdf',label=action==='SaveCDR'?'CorelDRAW 2020文件':'CorelDRAW印刷PDF';
+    const picked=await dialog.showSaveDialog({defaultPath:`${safeName(arg.title)}.${ext}`,filters:[{name:label,extensions:[ext]}]});
+    if(picked.canceled||!picked.filePath)return JSON.stringify({ok:false,cancelled:true,action});
+    args.push('-OutputPath',picked.filePath);
+  }
+  if(action==='PublishPDF')args.push('-Dpi',String(arg.dpi||300),'-BleedMM',String(arg.bleedMM??3),'-CropMarks',String(arg.cropMarks!==false));
+  return runPS(script,args);
+});
 ipcMain.handle('batch-export',async(_,arg)=>{
   const pick=await dialog.showOpenDialog({title:'选择批量导出文件夹',properties:['openDirectory','createDirectory']});if(pick.canceled)return null;
   const dir=pick.filePaths[0];await mkdir(dir,{recursive:true});const formats=arg.formats||['svg'];const report=[];
