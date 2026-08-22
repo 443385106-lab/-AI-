@@ -54,6 +54,9 @@ private:
     void pageSetup();
     void generateSmartBoard();
     void batchGenerateBoards();
+    void analyzeSampleLayout();
+    void openTemplateLibrary();
+    void saveCurrentAsTemplate();
     void importSvg();
     void exportSvg();
     void exportPdf();

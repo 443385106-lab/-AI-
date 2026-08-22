@@ -10,6 +10,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDateTime>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QDockWidget>
@@ -32,6 +33,7 @@
 #include <QGraphicsSvgItem>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QImage>
 #include <QInputDialog>
 #include <QJsonDocument>
@@ -52,6 +54,7 @@
 #include <QPlainTextEdit>
 #include <QRegularExpression>
 #include <QSet>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QSvgGenerator>
 #include <QSvgRenderer>
@@ -278,13 +281,13 @@ void prepareBoardItem(QGraphicsItem *item, const QString &kind, const QString &n
     item->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable); scene->addItem(item);
 }
 
-void addBoardDesign(QGraphicsScene *scene, const QRectF &page, const QString &title, const QString &body, const QString &footer, const BoardTheme &theme)
+void addBoardDesign(QGraphicsScene *scene, const QRectF &page, const QString &title, const QString &body, const QString &footer, const BoardTheme &theme, qreal headerRatio = 0.125, qreal marginRatio = 0.045)
 {
-    const qreal shortSide = qMin(page.width(), page.height()); const qreal margin = shortSide * 0.045; const qreal borderWidth = qMax(8.0, shortSide * 0.0045);
+    const qreal shortSide = qMin(page.width(), page.height()); const qreal margin = shortSide * qBound(0.025, marginRatio, 0.09); const qreal borderWidth = qMax(8.0, shortSide * 0.0045);
     auto *background = new QGraphicsRectItem(page); background->setPen(Qt::NoPen); background->setBrush(theme.background); prepareBoardItem(background, QStringLiteral("rectangle"), QStringLiteral("展板底色"), scene, -10.0);
     auto *outer = new QGraphicsRectItem(page.adjusted(margin * 0.48, margin * 0.48, -margin * 0.48, -margin * 0.48)); outer->setBrush(Qt::NoBrush); outer->setPen(QPen(theme.primary, borderWidth)); prepareBoardItem(outer, QStringLiteral("rectangle"), QStringLiteral("外边框"), scene, -5.0);
     auto *inner = new QGraphicsRectItem(page.adjusted(margin, margin, -margin, -margin)); inner->setBrush(Qt::NoBrush); inner->setPen(QPen(theme.accent, borderWidth * 0.42)); prepareBoardItem(inner, QStringLiteral("rectangle"), QStringLiteral("内边框"), scene, -4.0);
-    const qreal headerHeight = page.height() * 0.125; const QRectF header(page.left() + margin, page.top() + margin, page.width() - margin * 2.0, headerHeight);
+    const qreal headerHeight = page.height() * qBound(0.09, headerRatio, 0.24); const QRectF header(page.left() + margin, page.top() + margin, page.width() - margin * 2.0, headerHeight);
     auto *bar = new QGraphicsRectItem(header); bar->setPen(Qt::NoPen); bar->setBrush(theme.primary); prepareBoardItem(bar, QStringLiteral("rectangle"), QStringLiteral("标题栏"), scene, -2.0);
     auto *titleItem = new QGraphicsTextItem(title); QFont titleFont(QStringLiteral("Microsoft YaHei")); titleFont.setBold(true); titleFont.setPointSizeF(qMax(32.0, shortSide * (title.size() > 14 ? 0.024 : 0.031))); titleItem->setFont(titleFont); titleItem->setDefaultTextColor(Qt::white); titleItem->setTextWidth(header.width() - margin * 0.8); titleItem->document()->setDocumentMargin(0); QTextOption titleOption = titleItem->document()->defaultTextOption(); titleOption.setAlignment(Qt::AlignHCenter); titleItem->document()->setDefaultTextOption(titleOption); titleItem->setPos(header.left() + margin * 0.4, header.center().y() - titleItem->boundingRect().height() / 2.0); prepareBoardItem(titleItem, QStringLiteral("text"), QStringLiteral("制度标题"), scene, 2.0);
     const qreal bodyTop = header.bottom() + margin * 0.75; const qreal footerHeight = qMax(100.0, page.height() * 0.055); const qreal bodyHeight = page.bottom() - margin * 1.8 - footerHeight - bodyTop;
@@ -294,6 +297,61 @@ void addBoardDesign(QGraphicsScene *scene, const QRectF &page, const QString &ti
     if (!footer.trimmed().isEmpty()) {
         auto *footerItem = new QGraphicsTextItem(footer.trimmed()); QFont footerFont(QStringLiteral("Microsoft YaHei")); footerFont.setBold(true); footerFont.setPointSizeF(qMax(16.0, shortSide * 0.014)); footerItem->setFont(footerFont); footerItem->setDefaultTextColor(theme.primary); footerItem->setTextWidth(page.width() - margin * 3.0); footerItem->document()->setDocumentMargin(0); QTextOption option = footerItem->document()->defaultTextOption(); option.setAlignment(Qt::AlignRight); footerItem->document()->setDefaultTextOption(option); footerItem->setPos(page.left() + margin * 1.5, page.bottom() - margin * 1.25 - footerItem->boundingRect().height()); prepareBoardItem(footerItem, QStringLiteral("text"), QStringLiteral("落款"), scene, 1.0);
     }
+}
+
+QString templateDirectoryPath()
+{
+    const QString path = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/templates"); QDir().mkpath(path); return path;
+}
+
+QString safeFileStem(QString name)
+{
+    name.replace(QRegularExpression(QStringLiteral("[<>:\"/\\\\|?*]")), QStringLiteral("_")); name = name.trimmed().left(80); return name.isEmpty() ? QStringLiteral("未命名模板") : name;
+}
+
+void ensureBuiltinTemplates()
+{
+    const QString directory = templateDirectoryPath(); const QList<BoardTheme> themes = boardThemes();
+    const QStringList categories {QStringLiteral("政务"), QStringLiteral("安全生产"), QStringLiteral("食品"), QStringLiteral("制造车间"), QStringLiteral("医疗"), QStringLiteral("通用")};
+    for (int index = 0; index < themes.size(); ++index) {
+        const QString path = QDir(directory).filePath(QStringLiteral("builtin-%1.jxvt").arg(index)); if (QFileInfo::exists(path)) continue;
+        QGraphicsScene scene; const QRectF page(0, 0, 4000, 6000); const QString title = index == 2 ? QStringLiteral("食品安全管理制度") : index == 3 ? QStringLiteral("安全生产管理制度") : index == 4 ? QStringLiteral("岗位工作制度") : QStringLiteral("管理制度");
+        addBoardDesign(&scene, page, title, policyBodyForTitle(title), QStringLiteral("单位名称"), themes[index]);
+        QJsonObject root {{"format", "JiangxinBoardTemplate"}, {"name", themes[index].name + QStringLiteral("标准制度牌")}, {"category", categories.value(index, QStringLiteral("通用"))}, {"favorite", false}, {"builtin", true}, {"created", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}, {"document", DocumentIO::serializeDocument(&scene, page)}};
+        QString error; DocumentIO::saveFile(path, root, &error);
+    }
+}
+
+QColor averageImageRegion(const QImage &image, const QRect &area)
+{
+    const QRect clipped = area.intersected(image.rect()); if (clipped.isEmpty()) return Qt::white; qint64 r = 0, g = 0, b = 0, count = 0;
+    const int step = qMax(1, qMin(clipped.width(), clipped.height()) / 24);
+    for (int y = clipped.top(); y <= clipped.bottom(); y += step) for (int x = clipped.left(); x <= clipped.right(); x += step) { const QColor color = image.pixelColor(x, y); if (color.alpha() < 32) continue; r += color.red(); g += color.green(); b += color.blue(); ++count; }
+    return count > 0 ? QColor(r / count, g / count, b / count) : QColor(Qt::white);
+}
+
+int colorDistance(const QColor &a, const QColor &b)
+{
+    return qAbs(a.red() - b.red()) + qAbs(a.green() - b.green()) + qAbs(a.blue() - b.blue());
+}
+
+BoardTheme analyzeImageTheme(const QImage &source, qreal *headerRatio, qreal *marginRatio, bool *logoCandidate)
+{
+    const QImage image = source.scaled(240, 240, Qt::KeepAspectRatio, Qt::SmoothTransformation).convertToFormat(QImage::Format_ARGB32);
+    const int blockW = qMax(4, image.width() / 10), blockH = qMax(4, image.height() / 10);
+    const QList<QColor> corners {averageImageRegion(image, QRect(0, 0, blockW, blockH)), averageImageRegion(image, QRect(image.width() - blockW, 0, blockW, blockH)), averageImageRegion(image, QRect(0, image.height() - blockH, blockW, blockH)), averageImageRegion(image, QRect(image.width() - blockW, image.height() - blockH, blockW, blockH))};
+    QColor background((corners[0].red() + corners[1].red() + corners[2].red() + corners[3].red()) / 4, (corners[0].green() + corners[1].green() + corners[2].green() + corners[3].green()) / 4, (corners[0].blue() + corners[1].blue() + corners[2].blue() + corners[3].blue()) / 4);
+    QHash<int, int> bins; for (int y = 0; y < image.height(); y += 2) for (int x = 0; x < image.width(); x += 2) { const QColor c = image.pixelColor(x, y); if (c.alpha() < 32 || colorDistance(c, background) < 55) continue; const int key = (c.red() / 24) * 121 + (c.green() / 24) * 11 + c.blue() / 24; bins[key] += 1 + c.hsvSaturation() / 32; }
+    int bestKey = -1, bestScore = -1; for (auto it = bins.cbegin(); it != bins.cend(); ++it) if (it.value() > bestScore) { bestKey = it.key(); bestScore = it.value(); }
+    QColor primary = bestKey >= 0 ? QColor(((bestKey / 121) % 11) * 24 + 12, ((bestKey / 11) % 11) * 24 + 12, (bestKey % 11) * 24 + 12) : QColor("#145DA0");
+    if (primary.lightness() > 205) primary = primary.darker(180); QColor accent = primary.lighter(155); background = background.lightness() < 175 ? background.lighter(210) : background.lighter(105);
+    int lastStrongRow = -1; for (int y = 0; y < qRound(image.height() * 0.34); ++y) { const QColor row = averageImageRegion(image, QRect(0, y, image.width(), 1)); if (colorDistance(row, background) > 75) lastStrongRow = y; }
+    *headerRatio = lastStrongRow > 0 ? qBound(0.09, (lastStrongRow + 1.0) / image.height(), 0.22) : 0.125;
+    int inset = 0; const int centerY = image.height() / 2; for (int x = 0; x < image.width() / 5; ++x) if (colorDistance(image.pixelColor(x, centerY), background) > 65) { inset = x; break; }
+    *marginRatio = inset > 0 ? qBound(0.025, inset / static_cast<qreal>(qMin(image.width(), image.height())), 0.085) : 0.045;
+    const QRect logoArea(0, 0, image.width() / 3, image.height() / 4); int different = 0, sampled = 0; for (int y = logoArea.top(); y < logoArea.bottom(); y += 3) for (int x = logoArea.left(); x < logoArea.right(); x += 3) { ++sampled; if (colorDistance(image.pixelColor(x, y), background) > 95) ++different; }
+    *logoCandidate = sampled > 0 && different > sampled / 7;
+    return {QStringLiteral("样图分析"), primary, accent, background};
 }
 }
 
@@ -420,6 +478,11 @@ void MainWindow::buildMenus()
     auto *smartMenu = menuBar()->addMenu(QStringLiteral("智能展板(&I)"));
     smartMenu->addAction(QStringLiteral("输入制度名称自动生成…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N), this, &MainWindow::generateSmartBoard);
     smartMenu->addAction(QStringLiteral("批量生成独立制度牌…"), this, &MainWindow::batchGenerateBoards);
+    smartMenu->addAction(QStringLiteral("上传样图分析并仿制版式…"), this, &MainWindow::analyzeSampleLayout);
+
+    auto *templateMenu = menuBar()->addMenu(QStringLiteral("模板库(&M)"));
+    templateMenu->addAction(QStringLiteral("打开本地模板库…"), this, &MainWindow::openTemplateLibrary);
+    templateMenu->addAction(QStringLiteral("将当前设计保存为模板…"), this, &MainWindow::saveCurrentAsTemplate);
 
     auto *effectsMenu = menuBar()->addMenu(QStringLiteral("效果(&C)"));
     effectsMenu->addAction(QStringLiteral("线性渐变填充"), this, [this] { m_fillModeCombo->setCurrentIndex(1); applyInspector(); });
@@ -448,7 +511,7 @@ void MainWindow::buildMenus()
     textMenu->addAction(QStringLiteral("文本框自动缩字"), this, &MainWindow::autoFitSelectedText);
     auto *helpMenu = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
     helpMenu->addAction(QStringLiteral("关于匠心矢量设计"), this, [this] {
-        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.5 Native\n第六阶段：制度名称智能成稿、行业版式、本地内容、专业尺寸和最多20张批量生成。\n不包含任何CorelDRAW专有代码或文件规范。"));
+        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.6 Native\n第七阶段：样图颜色与结构分析、可编辑仿制版式、本地模板收藏、搜索和行业分类。\n不包含任何CorelDRAW专有代码或文件规范。"));
     });
 }
 
@@ -578,12 +641,12 @@ void MainWindow::buildDockers()
     auto *productionDock = new QDockWidget(QStringLiteral("生产与导出"), this); auto *panel = new QWidget; auto *layout = new QVBoxLayout(panel);
     auto *newButton = new QPushButton(QStringLiteral("新建设计")); auto *saveButton = new QPushButton(QStringLiteral("保存工程文件 .jxv"));
     auto *svgButton = new QPushButton(QStringLiteral("导出 SVG 矢量图")); auto *pdfButton = new QPushButton(QStringLiteral("导出普通 PDF")); auto *pngButton = new QPushButton(QStringLiteral("导出 PNG 高清图"));
-    auto *smartButton = new QPushButton(QStringLiteral("智能生成制度展板")); auto *printButton = new QPushButton(QStringLiteral("印前预检并导出印刷 PDF")); auto *batchButton = new QPushButton(QStringLiteral("批量生成独立制度牌"));
+    auto *smartButton = new QPushButton(QStringLiteral("智能生成制度展板")); auto *sampleButton = new QPushButton(QStringLiteral("上传样图仿制版式")); auto *templateButton = new QPushButton(QStringLiteral("本地模板库")); auto *printButton = new QPushButton(QStringLiteral("印前预检并导出印刷 PDF")); auto *batchButton = new QPushButton(QStringLiteral("批量生成独立制度牌"));
     layout->addWidget(new QLabel(QStringLiteral("自主文档格式：JXV\n交付格式：SVG / PDF / PNG / JPG / TIFF\n印刷输出：300dpi、出血与裁切线。")));
-    layout->addWidget(smartButton); layout->addWidget(newButton); layout->addWidget(saveButton); layout->addWidget(svgButton); layout->addWidget(pdfButton); layout->addWidget(pngButton); layout->addWidget(printButton); layout->addWidget(batchButton); layout->addStretch();
+    layout->addWidget(smartButton); layout->addWidget(sampleButton); layout->addWidget(templateButton); layout->addWidget(newButton); layout->addWidget(saveButton); layout->addWidget(svgButton); layout->addWidget(pdfButton); layout->addWidget(pngButton); layout->addWidget(printButton); layout->addWidget(batchButton); layout->addStretch();
     connect(newButton, &QPushButton::clicked, this, &MainWindow::newDocument); connect(saveButton, &QPushButton::clicked, this, [this] { saveDocument(false); });
     connect(svgButton, &QPushButton::clicked, this, &MainWindow::exportSvg); connect(pdfButton, &QPushButton::clicked, this, &MainWindow::exportPdf); connect(pngButton, &QPushButton::clicked, this, &MainWindow::exportPng);
-    connect(smartButton, &QPushButton::clicked, this, &MainWindow::generateSmartBoard); connect(printButton, &QPushButton::clicked, this, [this] { preflightDocument(); exportPrintPdf(); }); connect(batchButton, &QPushButton::clicked, this, &MainWindow::batchGenerateBoards);
+    connect(smartButton, &QPushButton::clicked, this, &MainWindow::generateSmartBoard); connect(sampleButton, &QPushButton::clicked, this, &MainWindow::analyzeSampleLayout); connect(templateButton, &QPushButton::clicked, this, &MainWindow::openTemplateLibrary); connect(printButton, &QPushButton::clicked, this, [this] { preflightDocument(); exportPrintPdf(); }); connect(batchButton, &QPushButton::clicked, this, &MainWindow::batchGenerateBoards);
     productionDock->setWidget(panel); addDockWidget(Qt::RightDockWidgetArea, productionDock); tabifyDockWidget(objectsDock, productionDock); objectsDock->raise();
 }
 
@@ -763,6 +826,43 @@ void MainWindow::batchGenerateBoards()
         if (saved) ++succeeded; else failures.append(titles[index] + QStringLiteral("：") + (error.isEmpty() ? QStringLiteral("输出失败") : error));
     }
     progress.setValue(titles.size()); QString result = QStringLiteral("已生成 %1/%2 张独立制度牌。\n输出文件夹：%3\n\n自动生成内容属于排版草稿，上墙或交付前请逐张审核。").arg(succeeded).arg(titles.size()).arg(QDir::toNativeSeparators(directory)); if (!failures.isEmpty()) result += QStringLiteral("\n\n失败：\n") + failures.join('\n'); QMessageBox::information(this, QStringLiteral("批量生成完成"), result); setStatus(QStringLiteral("批量生成完成：%1张").arg(succeeded));
+}
+
+void MainWindow::analyzeSampleLayout()
+{
+    const QString fileName = QFileDialog::getOpenFileName(this, QStringLiteral("选择需要分析的样图"), {}, QStringLiteral("样图 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")); if (fileName.isEmpty()) return;
+    const QImage image(fileName); if (image.isNull()) { QMessageBox::warning(this, QStringLiteral("读取失败"), QStringLiteral("无法读取所选样图")); return; }
+    qreal headerRatio = 0.125, marginRatio = 0.045; bool logoCandidate = false; const BoardTheme theme = analyzeImageTheme(image, &headerRatio, &marginRatio, &logoCandidate);
+    QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("样图版式分析结果")); dialog.resize(620, 560); QFormLayout layout(&dialog);
+    auto *preview = new QLabel(QStringLiteral("底色　　　主色　　　辅色")); preview->setAlignment(Qt::AlignCenter); preview->setMinimumHeight(54); preview->setStyleSheet(QStringLiteral("QLabel{color:%1;background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 %2,stop:0.34 %2,stop:0.35 %1,stop:0.67 %1,stop:0.68 %3,stop:1 %3);border:1px solid #777;font-weight:bold;}").arg(theme.primary.name(), theme.background.name(), theme.accent.name()));
+    auto *analysis = new QLabel(QStringLiteral("识别结果：标题区约占 %1%　边框内缩约 %2%　LOGO候选：%3").arg(qRound(headerRatio * 100)).arg(qRound(marginRatio * 100)).arg(logoCandidate ? QStringLiteral("有") : QStringLiteral("未发现"))); analysis->setWordWrap(true);
+    auto *titleEdit = new QLineEdit; titleEdit->setPlaceholderText(QStringLiteral("输入新制度名称")); auto *bodyEdit = new QPlainTextEdit; bodyEdit->setPlaceholderText(QStringLiteral("正文可留空，由本地规则根据标题生成")); auto *footerEdit = new QLineEdit; footerEdit->setPlaceholderText(QStringLiteral("公司名称或落款（可留空）")); auto *sizeCombo = new QComboBox; sizeCombo->addItems(boardSizeLabels()); auto *logoBox = new QCheckBox(QStringLiteral("在检测位置保留LOGO占位框")); logoBox->setChecked(logoCandidate);
+    layout.addRow(preview); layout.addRow(analysis); layout.addRow(QStringLiteral("制度名称"), titleEdit); layout.addRow(QStringLiteral("正文内容"), bodyEdit); layout.addRow(QStringLiteral("落款"), footerEdit); layout.addRow(QStringLiteral("成品尺寸"), sizeCombo); layout.addRow(logoBox);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("生成可编辑版式")); buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消")); layout.addRow(buttons); connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return; const QString title = titleEdit->text().trimmed(); if (title.isEmpty()) { QMessageBox::warning(this, QStringLiteral("缺少名称"), QStringLiteral("请输入制度名称")); return; } QString body = bodyEdit->toPlainText().trimmed(); if (body.isEmpty()) body = policyBodyForTitle(title); if (!maybeSave()) return;
+    const QSizeF sizeMm = boardSizeMillimeters(sizeCombo->currentText()); const QRectF page(100, 100, sizeMm.width() * 10.0, sizeMm.height() * 10.0); m_restoring = true; m_canvas->scene()->clear(); m_canvas->setPageRect(page); m_fileName.clear(); m_history.clear(); m_historyIndex = -1; m_currentLayer = QStringLiteral("样图仿制"); m_canvas->setActiveLayer(m_currentLayer); addBoardDesign(m_canvas->scene(), page, title, body, footerEdit->text(), theme, headerRatio, marginRatio);
+    if (logoBox->isChecked()) { const qreal side = qMin(page.width(), page.height()) * 0.095; const qreal gap = qMin(page.width(), page.height()) * marginRatio * 1.2; auto *logo = new QGraphicsRectItem(QRectF(page.left() + gap, page.top() + gap, side, side)); QPen pen(theme.accent.darker(130), qMax(4.0, side * 0.018), Qt::DashLine); logo->setPen(pen); logo->setBrush(QColor(255, 255, 255, 205)); prepareBoardItem(logo, QStringLiteral("rectangle"), QStringLiteral("LOGO占位框"), m_canvas->scene(), 5.0); auto *label = new QGraphicsTextItem(QStringLiteral("LOGO")); QFont font(QStringLiteral("Arial")); font.setBold(true); font.setPointSizeF(side * 0.09); label->setFont(font); label->setDefaultTextColor(theme.primary); label->setTextWidth(side); QTextOption option = label->document()->defaultTextOption(); option.setAlignment(Qt::AlignCenter); label->document()->setDefaultTextOption(option); label->setPos(logo->rect().left(), logo->rect().center().y() - label->boundingRect().height() / 2.0); prepareBoardItem(label, QStringLiteral("text"), QStringLiteral("LOGO占位文字"), m_canvas->scene(), 6.0); }
+    m_restoring = false; m_modified = true; recordHistory(QStringLiteral("样图版式分析生成")); m_canvas->zoomToFit(); updateObjectList(); updateWindowTitle(); setStatus(QStringLiteral("样图版式已分析并生成可编辑对象"));
+}
+
+void MainWindow::saveCurrentAsTemplate()
+{
+    int roots = 0; for (QGraphicsItem *item : m_canvas->scene()->items()) if (!item->parentItem() && !item->data(KindRole).toString().isEmpty()) ++roots; if (roots == 0) { setStatus(QStringLiteral("当前设计为空，无法保存模板")); return; }
+    QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("保存到本地模板库")); QFormLayout layout(&dialog); auto *nameEdit = new QLineEdit(QFileInfo(m_fileName).completeBaseName()); auto *categoryCombo = new QComboBox; categoryCombo->setEditable(true); categoryCombo->addItems({QStringLiteral("自定义"), QStringLiteral("安全生产"), QStringLiteral("食品"), QStringLiteral("医疗"), QStringLiteral("教育"), QStringLiteral("物业"), QStringLiteral("仓库物流"), QStringLiteral("公司管理"), QStringLiteral("通用")}); auto *favorite = new QCheckBox(QStringLiteral("保存后加入收藏")); layout.addRow(QStringLiteral("模板名称"), nameEdit); layout.addRow(QStringLiteral("行业分类"), categoryCombo); layout.addRow(favorite); auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel); buttons->button(QDialogButtonBox::Save)->setText(QStringLiteral("保存模板")); buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消")); layout.addRow(buttons); connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return; const QString name = nameEdit->text().trimmed(); if (name.isEmpty()) return; const QString path = QDir(templateDirectoryPath()).filePath(safeFileStem(name) + QStringLiteral(".jxvt")); if (QFileInfo::exists(path) && QMessageBox::question(this, QStringLiteral("覆盖模板"), QStringLiteral("同名模板已存在，是否覆盖？")) != QMessageBox::Yes) return;
+    QJsonObject root {{"format", "JiangxinBoardTemplate"}, {"name", name}, {"category", categoryCombo->currentText().trimmed().isEmpty() ? QStringLiteral("自定义") : categoryCombo->currentText().trimmed()}, {"favorite", favorite->isChecked()}, {"builtin", false}, {"created", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}, {"document", DocumentIO::serializeDocument(m_canvas->scene(), m_canvas->pageRect())}}; QString error;
+    if (!DocumentIO::saveFile(path, root, &error)) QMessageBox::critical(this, QStringLiteral("保存失败"), error); else setStatus(QStringLiteral("已保存到本地模板库：") + name);
+}
+
+void MainWindow::openTemplateLibrary()
+{
+    ensureBuiltinTemplates(); QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("本地制度展板模板库")); dialog.resize(760, 560); QVBoxLayout layout(&dialog); auto *filters = new QHBoxLayout; auto *search = new QLineEdit; search->setPlaceholderText(QStringLiteral("搜索模板名称…")); auto *category = new QComboBox; category->addItems({QStringLiteral("全部分类"), QStringLiteral("政务"), QStringLiteral("安全生产"), QStringLiteral("食品"), QStringLiteral("制造车间"), QStringLiteral("医疗"), QStringLiteral("教育"), QStringLiteral("物业"), QStringLiteral("仓库物流"), QStringLiteral("公司管理"), QStringLiteral("通用"), QStringLiteral("自定义")}); filters->addWidget(search, 1); filters->addWidget(category); layout.addLayout(filters); auto *list = new QListWidget; list->setAlternatingRowColors(true); layout.addWidget(list, 1); auto *actions = new QHBoxLayout; auto *applyButton = new QPushButton(QStringLiteral("应用模板")); auto *favoriteButton = new QPushButton(QStringLiteral("收藏/取消收藏")); auto *deleteButton = new QPushButton(QStringLiteral("删除自定义模板")); auto *closeButton = new QPushButton(QStringLiteral("关闭")); actions->addWidget(applyButton); actions->addWidget(favoriteButton); actions->addWidget(deleteButton); actions->addStretch(); actions->addWidget(closeButton); layout.addLayout(actions);
+    auto reload = [&] { list->clear(); QDir dir(templateDirectoryPath()); const QString query = search->text().trimmed(); const QString wanted = category->currentText(); for (const QString &file : dir.entryList({QStringLiteral("*.jxvt")}, QDir::Files, QDir::Name)) { QString error; const QString path = dir.filePath(file); const QJsonObject root = DocumentIO::loadFile(path, &error); if (root["format"].toString() != QStringLiteral("JiangxinBoardTemplate")) continue; const QString name = root["name"].toString(); const QString group = root["category"].toString(QStringLiteral("自定义")); if (!query.isEmpty() && !name.contains(query, Qt::CaseInsensitive)) continue; if (wanted != QStringLiteral("全部分类") && wanted != group) continue; auto *row = new QListWidgetItem(QStringLiteral("%1  %2　｜　%3%4").arg(root["favorite"].toBool() ? QStringLiteral("★") : QStringLiteral("☆"), name, group, root["builtin"].toBool() ? QStringLiteral("　内置") : QStringLiteral("　自定义"))); row->setData(Qt::UserRole, path); list->addItem(row); } if (list->count() > 0) list->setCurrentRow(0); };
+    connect(search, &QLineEdit::textChanged, &dialog, [&](const QString &) { reload(); }); connect(category, &QComboBox::currentTextChanged, &dialog, [&](const QString &) { reload(); }); connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+    connect(favoriteButton, &QPushButton::clicked, &dialog, [&] { if (!list->currentItem()) return; const QString path = list->currentItem()->data(Qt::UserRole).toString(); QString error; QJsonObject root = DocumentIO::loadFile(path, &error); root["favorite"] = !root["favorite"].toBool(); DocumentIO::saveFile(path, root, &error); reload(); });
+    connect(deleteButton, &QPushButton::clicked, &dialog, [&] { if (!list->currentItem()) return; const QString path = list->currentItem()->data(Qt::UserRole).toString(); QString error; const QJsonObject root = DocumentIO::loadFile(path, &error); if (root["builtin"].toBool()) { QMessageBox::information(&dialog, QStringLiteral("内置模板"), QStringLiteral("内置模板不能删除，可以取消收藏。")); return; } if (QMessageBox::question(&dialog, QStringLiteral("删除模板"), QStringLiteral("确定删除“%1”？").arg(root["name"].toString())) == QMessageBox::Yes) { QFile::remove(path); reload(); } });
+    connect(applyButton, &QPushButton::clicked, &dialog, [&] { if (!list->currentItem()) return; const QString path = list->currentItem()->data(Qt::UserRole).toString(); QString error; const QJsonObject root = DocumentIO::loadFile(path, &error); const QJsonObject document = root["document"].toObject(); if (document.isEmpty()) return; if (!maybeSave()) return; QRectF page; m_restoring = true; if (!DocumentIO::restoreDocument(m_canvas->scene(), document, &page, &error)) { m_restoring = false; QMessageBox::critical(&dialog, QStringLiteral("应用失败"), error); return; } m_canvas->setPageRect(page); m_fileName.clear(); m_history.clear(); m_historyIndex = -1; m_currentLayer = QStringLiteral("图层 1"); m_canvas->setActiveLayer(m_currentLayer); m_restoring = false; m_modified = true; recordHistory(QStringLiteral("应用模板")); m_canvas->zoomToFit(); applyLayerState(); updateWindowTitle(); setStatus(QStringLiteral("已应用模板：") + root["name"].toString()); dialog.accept(); });
+    connect(list, &QListWidget::itemDoubleClicked, &dialog, [&](QListWidgetItem *) { applyButton->click(); }); reload(); dialog.exec();
 }
 
 void MainWindow::importSvg()
@@ -1399,7 +1499,7 @@ void MainWindow::chooseSecondFillColor()
 
 void MainWindow::updateWindowTitle()
 {
-    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.5 Native").arg(m_modified ? "*" : "", name));
+    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.6 Native").arg(m_modified ? "*" : "", name));
 }
 
 void MainWindow::setStatus(const QString &message) { if (m_statusLabel) m_statusLabel->setText(message); }
