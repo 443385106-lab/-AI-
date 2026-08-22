@@ -1,0 +1,46 @@
+name: Build Windows Setup
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Restore application icon
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem "assets/icon-b64/app-icon.ico.b64.part-*" | Sort-Object Name
+          $base64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ""
+          [System.IO.File]::WriteAllBytes("assets/app-icon.ico", [Convert]::FromBase64String($base64))
+          Add-Type -AssemblyName System.Drawing
+          $icon = New-Object System.Drawing.Icon((Resolve-Path "assets/app-icon.ico"), 256, 256)
+          $bitmap = $icon.ToBitmap()
+          $pngPath = Join-Path (Resolve-Path "assets").Path "app-icon.png"
+          $bitmap.Save($pngPath, [System.Drawing.Imaging.ImageFormat]::Png)
+          $bitmap.Dispose()
+          $icon.Dispose()
+          Remove-Item "assets/icon-b64" -Recurse -Force
+      - name: Install dependencies
+        run: npm install
+      - name: Build NSIS installer
+        run: npm run dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZhiduBoardStudio-Windows-Setup
+          path: dist/*Setup.exe
+          if-no-files-found: error
+          retention-days: 30
