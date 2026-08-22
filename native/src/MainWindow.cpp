@@ -7,6 +7,7 @@
 #include <QCloseEvent>
 #include <QColorDialog>
 #include <QDoubleSpinBox>
+#include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGraphicsItemGroup>
