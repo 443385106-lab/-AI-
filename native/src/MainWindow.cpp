@@ -10,6 +10,7 @@
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFontComboBox>
 #include <QAbstractGraphicsShapeItem>
 #include <QGraphicsItemGroup>
 #include <QGraphicsItem>
@@ -33,6 +34,8 @@
 #include <QPageSize>
 #include <QPainter>
 #include <QPainterPathStroker>
+#include <QLinearGradient>
+#include <QRadialGradient>
 #include <QPdfWriter>
 #include <QPushButton>
 #include <QSet>
@@ -40,6 +43,10 @@
 #include <QSvgGenerator>
 #include <QToolBar>
 #include <QToolButton>
+#include <QTextBlockFormat>
+#include <QTextCursor>
+#include <QTextDocument>
+#include <QTextOption>
 #include <QVBoxLayout>
 #include <algorithm>
 
@@ -49,6 +56,8 @@ constexpr int NameRole = 1;
 constexpr int LayerRole = 2;
 constexpr int LockedRole = 3;
 constexpr int VisibleRole = 4;
+constexpr int TextBoxHeightRole = 5;
+constexpr int ParagraphRole = 6;
 
 QString toolName(CanvasView::Tool tool)
 {
@@ -61,6 +70,7 @@ QString toolName(CanvasView::Tool tool)
     case CanvasView::Tool::Ellipse: return QStringLiteral("椭圆工具");
     case CanvasView::Tool::Line: return QStringLiteral("直线工具");
     case CanvasView::Tool::Text: return QStringLiteral("文字工具");
+    case CanvasView::Tool::ParagraphText: return QStringLiteral("段落文本工具");
     case CanvasView::Tool::Zoom: return QStringLiteral("缩放工具");
     case CanvasView::Tool::Pan: return QStringLiteral("平移工具");
     }
@@ -145,6 +155,8 @@ void MainWindow::buildInterface()
     buildMenus();
     buildToolbox();
     buildPropertyBar();
+    buildTextAndColorBar();
+    buildColorPalette();
     buildDockers();
 
     m_statusLabel = new QLabel(QStringLiteral("就绪"));
@@ -230,12 +242,19 @@ void MainWindow::buildMenus()
     layoutMenu->addAction(QStringLiteral("水平等距分布"), this, [this] { distributeSelection(true); });
     layoutMenu->addAction(QStringLiteral("垂直等距分布"), this, [this] { distributeSelection(false); });
 
-    menuBar()->addMenu(QStringLiteral("效果(&C)"))->addAction(QStringLiteral("高级效果模块将在1.5版本启用"));
+    auto *effectsMenu = menuBar()->addMenu(QStringLiteral("效果(&C)"));
+    effectsMenu->addAction(QStringLiteral("线性渐变填充"), this, [this] { m_fillModeCombo->setCurrentIndex(1); applyInspector(); });
+    effectsMenu->addAction(QStringLiteral("径向渐变填充"), this, [this] { m_fillModeCombo->setCurrentIndex(2); applyInspector(); });
+    effectsMenu->addAction(QStringLiteral("高级封套/调和模块将在1.5版本启用"));
     menuBar()->addMenu(QStringLiteral("位图(&B)"))->addAction(QStringLiteral("AI描摹模块将在1.5版本启用"));
-    menuBar()->addMenu(QStringLiteral("文字(&T)"))->addAction(QStringLiteral("添加美术字"), this, [this] { setCurrentTool(CanvasView::Tool::Text); });
+    auto *textMenu = menuBar()->addMenu(QStringLiteral("文字(&T)"));
+    textMenu->addAction(QStringLiteral("添加美术字"), this, [this] { setCurrentTool(CanvasView::Tool::Text); });
+    textMenu->addAction(QStringLiteral("添加段落文本"), this, [this] { setCurrentTool(CanvasView::Tool::ParagraphText); });
+    textMenu->addAction(QStringLiteral("编辑文字内容…"), this, &MainWindow::editSelectedText);
+    textMenu->addAction(QStringLiteral("文本框自动缩字"), this, &MainWindow::autoFitSelectedText);
     auto *helpMenu = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
     helpMenu->addAction(QStringLiteral("关于匠心矢量设计"), this, [this] {
-        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.1 Native\n第二阶段：贝塞尔节点、布尔造型、图层与图框裁剪。\n不包含任何CorelDRAW专有代码或文件规范。"));
+        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.2 Native\n第三阶段：专业文字排版、渐变填充、透明度与快捷色板。\n不包含任何CorelDRAW专有代码或文件规范。"));
     });
 }
 
@@ -261,6 +280,7 @@ void MainWindow::buildToolbox()
     tools->addAction(addToolAction(QStringLiteral("○"), QStringLiteral("E"), CanvasView::Tool::Ellipse));
     tools->addAction(addToolAction(QStringLiteral("╱"), QStringLiteral("L"), CanvasView::Tool::Line));
     tools->addAction(addToolAction(QStringLiteral("字"), QStringLiteral("T"), CanvasView::Tool::Text));
+    tools->addAction(addToolAction(QStringLiteral("¶"), QStringLiteral("A"), CanvasView::Tool::ParagraphText));
     tools->addSeparator();
     tools->addAction(addToolAction(QStringLiteral("⌕"), QStringLiteral("Z"), CanvasView::Tool::Zoom));
     tools->addAction(addToolAction(QStringLiteral("✋"), QStringLiteral("H"), CanvasView::Tool::Pan));
@@ -280,6 +300,47 @@ void MainWindow::buildPropertyBar()
     bar->addWidget(new QLabel(QStringLiteral(" 轮廓 "))); m_strokeButton = new QToolButton; m_strokeButton->setStyleSheet(colorButtonStyle(m_strokeColor)); m_strokeButton->setText(QStringLiteral("   ")); bar->addWidget(m_strokeButton);
     bar->addWidget(new QLabel(QStringLiteral(" 线宽 "))); m_strokeWidthSpin = makeSpin(0, 100); m_strokeWidthSpin->setValue(2.0);
     bar->addAction(QStringLiteral("应用"), this, &MainWindow::applyInspector);
+}
+
+void MainWindow::buildTextAndColorBar()
+{
+    auto *bar = addToolBar(QStringLiteral("文字与色彩"));
+    bar->setMovable(false); bar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    bar->addWidget(new QLabel(QStringLiteral(" 字体 ")));
+    m_fontCombo = new QFontComboBox; m_fontCombo->setMaximumWidth(155); m_fontCombo->setCurrentFont(QFont(QStringLiteral("Microsoft YaHei"))); bar->addWidget(m_fontCombo);
+    bar->addWidget(new QLabel(QStringLiteral(" 字号 ")));
+    m_fontSizeSpin = new QDoubleSpinBox; m_fontSizeSpin->setRange(6, 500); m_fontSizeSpin->setDecimals(1); m_fontSizeSpin->setValue(24); m_fontSizeSpin->setMaximumWidth(70); bar->addWidget(m_fontSizeSpin);
+    m_boldButton = new QToolButton; m_boldButton->setText(QStringLiteral("B")); m_boldButton->setCheckable(true); m_boldButton->setFont(QFont(QStringLiteral("Arial"), 9, QFont::Bold)); bar->addWidget(m_boldButton);
+    m_italicButton = new QToolButton; m_italicButton->setText(QStringLiteral("I")); m_italicButton->setCheckable(true); QFont italicFont(QStringLiteral("Arial"), 9); italicFont.setItalic(true); m_italicButton->setFont(italicFont); bar->addWidget(m_italicButton);
+    m_alignmentCombo = new QComboBox; m_alignmentCombo->addItems({QStringLiteral("左对齐"), QStringLiteral("居中"), QStringLiteral("右对齐"), QStringLiteral("两端对齐")}); m_alignmentCombo->setMaximumWidth(92); bar->addWidget(m_alignmentCombo);
+    bar->addWidget(new QLabel(QStringLiteral(" 文本宽 ")));
+    m_textWidthSpin = new QDoubleSpinBox; m_textWidthSpin->setRange(0, 100000); m_textWidthSpin->setValue(360); m_textWidthSpin->setMaximumWidth(76); bar->addWidget(m_textWidthSpin);
+    bar->addWidget(new QLabel(QStringLiteral(" 高 ")));
+    m_textHeightSpin = new QDoubleSpinBox; m_textHeightSpin->setRange(20, 100000); m_textHeightSpin->setValue(260); m_textHeightSpin->setMaximumWidth(70); bar->addWidget(m_textHeightSpin);
+    bar->addSeparator(); bar->addWidget(new QLabel(QStringLiteral(" 填充模式 ")));
+    m_fillModeCombo = new QComboBox; m_fillModeCombo->addItems({QStringLiteral("纯色"), QStringLiteral("线性渐变"), QStringLiteral("径向渐变"), QStringLiteral("无填充")}); m_fillModeCombo->setMaximumWidth(96); bar->addWidget(m_fillModeCombo);
+    m_secondFillButton = new QToolButton; m_secondFillButton->setText(QStringLiteral("渐变色")); m_secondFillButton->setStyleSheet(colorButtonStyle(m_secondFillColor)); bar->addWidget(m_secondFillButton);
+    m_outlineStyleCombo = new QComboBox; m_outlineStyleCombo->addItems({QStringLiteral("实线"), QStringLiteral("虚线"), QStringLiteral("点线"), QStringLiteral("点划线")}); m_outlineStyleCombo->setMaximumWidth(82); bar->addWidget(m_outlineStyleCombo);
+    bar->addWidget(new QLabel(QStringLiteral(" 透明度 ")));
+    m_opacitySpin = new QDoubleSpinBox; m_opacitySpin->setRange(0, 100); m_opacitySpin->setSuffix(QStringLiteral("%")); m_opacitySpin->setValue(100); m_opacitySpin->setMaximumWidth(72); bar->addWidget(m_opacitySpin);
+    bar->addAction(QStringLiteral("应用文字/色彩"), this, &MainWindow::applyInspector);
+    connect(m_secondFillButton, &QToolButton::clicked, this, &MainWindow::chooseSecondFillColor);
+}
+
+void MainWindow::buildColorPalette()
+{
+    auto *palette = new QToolBar(QStringLiteral("快捷色板"), this); palette->setMovable(false); palette->setIconSize(QSize(18, 18));
+    addToolBar(Qt::BottomToolBarArea, palette);
+    const QList<QColor> colors {
+        QColor("#000000"), QColor("#ffffff"), QColor("#e53935"), QColor("#ff7a00"), QColor("#f5c542"),
+        QColor("#43a047"), QColor("#00a7a7"), QColor("#1976d2"), QColor("#3949ab"), QColor("#7b1fa2"),
+        QColor("#d81b60"), QColor("#795548"), QColor("#607d8b"), QColor("#cfd8dc"), QColor("#0b4f8a"), QColor("#a50f15")
+    };
+    palette->addWidget(new QLabel(QStringLiteral(" 快捷填充 ")));
+    for (const QColor &color : colors) {
+        auto *button = new QToolButton; button->setText(QStringLiteral("  ")); button->setToolTip(color.name().toUpper()); button->setStyleSheet(QStringLiteral("QToolButton{background:%1;border:1px solid #687078;min-width:22px;max-width:22px;min-height:20px;}").arg(color.name()));
+        connect(button, &QToolButton::clicked, this, [this, color] { applyQuickColor(color); }); palette->addWidget(button);
+    }
 }
 
 void MainWindow::buildCentralCanvas()
@@ -380,10 +441,23 @@ void MainWindow::updateInspector()
     QGraphicsItem *item = selected.first(); const QRectF bounds = item->sceneBoundingRect();
     for (QDoubleSpinBox *spin : {m_xSpin, m_ySpin, m_wSpin, m_hSpin, m_rotationSpin, m_strokeWidthSpin}) spin->blockSignals(true);
     m_xSpin->setValue(bounds.x()); m_ySpin->setValue(bounds.y()); m_wSpin->setValue(bounds.width()); m_hSpin->setValue(bounds.height()); m_rotationSpin->setValue(item->rotation());
-    if (auto *shape = dynamic_cast<QAbstractGraphicsShapeItem *>(item)) { m_fillColor = shape->brush().color(); m_strokeColor = shape->pen().color(); m_strokeWidthSpin->setValue(shape->pen().widthF()); }
+    m_opacitySpin->setValue(item->opacity() * 100.0);
+    if (auto *shape = dynamic_cast<QAbstractGraphicsShapeItem *>(item)) {
+        const QBrush brush = shape->brush(); m_fillColor = brush.color(); m_strokeColor = shape->pen().color(); m_strokeWidthSpin->setValue(shape->pen().widthF());
+        if (const QGradient *gradient = brush.gradient()) {
+            m_fillModeCombo->setCurrentIndex(gradient->type() == QGradient::RadialGradient ? 2 : 1);
+            const auto stops = gradient->stops(); if (!stops.isEmpty()) { m_fillColor = stops.first().second; m_secondFillColor = stops.last().second; }
+        } else m_fillModeCombo->setCurrentIndex(brush.style() == Qt::NoBrush ? 3 : 0);
+        const Qt::PenStyle style = shape->pen().style(); m_outlineStyleCombo->setCurrentIndex(style == Qt::DashLine ? 1 : style == Qt::DotLine ? 2 : style == Qt::DashDotLine ? 3 : 0);
+    }
     else if (auto *line = dynamic_cast<QGraphicsLineItem *>(item)) { m_strokeColor = line->pen().color(); m_strokeWidthSpin->setValue(line->pen().widthF()); }
-    else if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) m_fillColor = text->defaultTextColor();
+    else if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) {
+        m_fillColor = text->defaultTextColor(); const QFont font = text->font(); m_fontCombo->setCurrentFont(font); m_fontSizeSpin->setValue(font.pointSizeF() > 0 ? font.pointSizeF() : 24.0); m_boldButton->setChecked(font.bold()); m_italicButton->setChecked(font.italic());
+        m_textWidthSpin->setValue(text->textWidth() > 0 ? text->textWidth() : 0); m_textHeightSpin->setValue(item->data(TextBoxHeightRole).toDouble() > 0 ? item->data(TextBoxHeightRole).toDouble() : qMax(20.0, text->boundingRect().height()));
+        const Qt::Alignment alignment = text->document()->defaultTextOption().alignment(); m_alignmentCombo->setCurrentIndex(alignment.testFlag(Qt::AlignJustify) ? 3 : alignment.testFlag(Qt::AlignRight) ? 2 : alignment.testFlag(Qt::AlignHCenter) ? 1 : 0);
+    }
     m_fillButton->setStyleSheet(colorButtonStyle(m_fillColor)); m_strokeButton->setStyleSheet(colorButtonStyle(m_strokeColor));
+    m_secondFillButton->setStyleSheet(colorButtonStyle(m_secondFillColor));
     for (QDoubleSpinBox *spin : {m_xSpin, m_ySpin, m_wSpin, m_hSpin, m_rotationSpin, m_strokeWidthSpin}) spin->blockSignals(false);
     if (m_selectionLabel) m_selectionLabel->setText(QStringLiteral("已选择 %1 个对象").arg(selected.size()));
 }
@@ -686,8 +760,67 @@ void MainWindow::applyLayerState()
 void MainWindow::applyInspector()
 {
     const auto selected = m_canvas->scene()->selectedItems(); if (selected.isEmpty()) return; QGraphicsItem *first = selected.first(); const QRectF old = first->sceneBoundingRect(); first->moveBy(m_xSpin->value() - old.x(), m_ySpin->value() - old.y()); const QRectF moved = first->sceneBoundingRect(); if (moved.width() > 0.01 && moved.height() > 0.01) first->setTransform(QTransform::fromScale(m_wSpin->value() / moved.width(), m_hSpin->value() / moved.height()), true); first->setRotation(m_rotationSpin->value());
-    for (QGraphicsItem *item : selected) { if (auto *shape = dynamic_cast<QAbstractGraphicsShapeItem *>(item)) { shape->setBrush(m_fillColor); QPen pen = shape->pen(); pen.setColor(m_strokeColor); pen.setWidthF(m_strokeWidthSpin->value()); shape->setPen(pen); } else if (auto *line = dynamic_cast<QGraphicsLineItem *>(item)) { QPen pen = line->pen(); pen.setColor(m_strokeColor); pen.setWidthF(m_strokeWidthSpin->value()); line->setPen(pen); } else if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) text->setDefaultTextColor(m_fillColor); }
-    markModified(QStringLiteral("对象属性已应用")); updateInspector();
+    const QList<Qt::PenStyle> styles {Qt::SolidLine, Qt::DashLine, Qt::DotLine, Qt::DashDotLine};
+    for (QGraphicsItem *item : selected) {
+        item->setOpacity(m_opacitySpin->value() / 100.0);
+        if (auto *shape = dynamic_cast<QAbstractGraphicsShapeItem *>(item)) {
+            shape->setBrush(selectedFillBrush(shape->boundingRect())); QPen pen = shape->pen(); pen.setColor(m_strokeColor); pen.setWidthF(m_strokeWidthSpin->value()); pen.setStyle(styles.value(m_outlineStyleCombo->currentIndex(), Qt::SolidLine)); shape->setPen(pen);
+        } else if (auto *line = dynamic_cast<QGraphicsLineItem *>(item)) {
+            QPen pen = line->pen(); pen.setColor(m_strokeColor); pen.setWidthF(m_strokeWidthSpin->value()); pen.setStyle(styles.value(m_outlineStyleCombo->currentIndex(), Qt::SolidLine)); line->setPen(pen);
+        } else if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) {
+            QFont font = m_fontCombo->currentFont(); font.setPointSizeF(m_fontSizeSpin->value()); font.setBold(m_boldButton->isChecked()); font.setItalic(m_italicButton->isChecked()); text->setFont(font); text->setDefaultTextColor(m_fillColor);
+            text->setTextWidth(m_textWidthSpin->value() <= 0.1 ? -1.0 : m_textWidthSpin->value()); text->setData(TextBoxHeightRole, m_textHeightSpin->value()); text->setData(ParagraphRole, m_textWidthSpin->value() > 0.1);
+            QTextOption option = text->document()->defaultTextOption(); const QList<Qt::Alignment> alignments {Qt::AlignLeft, Qt::AlignHCenter, Qt::AlignRight, Qt::AlignJustify}; option.setAlignment(alignments.value(m_alignmentCombo->currentIndex(), Qt::AlignLeft)); text->document()->setDefaultTextOption(option);
+        }
+    }
+    markModified(QStringLiteral("文字与色彩属性已应用")); updateInspector();
+}
+
+QBrush MainWindow::selectedFillBrush(const QRectF &bounds) const
+{
+    if (m_fillModeCombo->currentIndex() == 3) return QBrush(Qt::NoBrush);
+    if (m_fillModeCombo->currentIndex() == 1) {
+        QLinearGradient gradient(bounds.topLeft(), bounds.bottomRight()); gradient.setColorAt(0.0, m_fillColor); gradient.setColorAt(1.0, m_secondFillColor); return QBrush(gradient);
+    }
+    if (m_fillModeCombo->currentIndex() == 2) {
+        QRadialGradient gradient(bounds.center(), qMax(bounds.width(), bounds.height()) / 2.0); gradient.setColorAt(0.0, m_fillColor); gradient.setColorAt(1.0, m_secondFillColor); return QBrush(gradient);
+    }
+    return QBrush(m_fillColor);
+}
+
+void MainWindow::editSelectedText()
+{
+    for (QGraphicsItem *item : m_canvas->scene()->selectedItems()) {
+        auto *text = dynamic_cast<QGraphicsTextItem *>(item); if (!text) continue; bool ok = false;
+        const QString value = QInputDialog::getMultiLineText(this, QStringLiteral("编辑文字内容"), QStringLiteral("文字"), text->toPlainText(), &ok);
+        if (ok) { text->setPlainText(value); item->setData(NameRole, item->data(ParagraphRole).toBool() ? QStringLiteral("段落文本") : value.left(20)); markModified(QStringLiteral("文字内容已更新")); }
+        return;
+    }
+    setStatus(QStringLiteral("请先选择一个文字对象"));
+}
+
+void MainWindow::autoFitSelectedText()
+{
+    bool changed = false;
+    for (QGraphicsItem *item : m_canvas->scene()->selectedItems()) {
+        auto *text = dynamic_cast<QGraphicsTextItem *>(item); if (!text) continue;
+        const qreal maximumHeight = item->data(TextBoxHeightRole).toDouble() > 0 ? item->data(TextBoxHeightRole).toDouble() : m_textHeightSpin->value();
+        QFont font = text->font(); qreal size = font.pointSizeF() > 0 ? font.pointSizeF() : m_fontSizeSpin->value();
+        while (text->boundingRect().height() > maximumHeight && size > 6.0) { size -= 0.5; font.setPointSizeF(size); text->setFont(font); }
+        changed = true;
+    }
+    if (changed) markModified(QStringLiteral("文本溢出检测完成，字号已自动适配")); else setStatus(QStringLiteral("请先选择段落文本"));
+}
+
+void MainWindow::applyQuickColor(const QColor &color)
+{
+    m_fillColor = color; m_fillModeCombo->setCurrentIndex(0); m_fillButton->setStyleSheet(colorButtonStyle(color)); m_canvas->setFillColor(color);
+    const auto selected = m_canvas->scene()->selectedItems();
+    for (QGraphicsItem *item : selected) {
+        if (auto *shape = dynamic_cast<QAbstractGraphicsShapeItem *>(item)) shape->setBrush(color);
+        else if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) text->setDefaultTextColor(color);
+    }
+    if (!selected.isEmpty()) markModified(QStringLiteral("快捷填充颜色已应用"));
 }
 
 void MainWindow::chooseFillColor()
@@ -700,9 +833,14 @@ void MainWindow::chooseStrokeColor()
     const QColor color = QColorDialog::getColor(m_strokeColor, this, QStringLiteral("选择轮廓颜色"), QColorDialog::ShowAlphaChannel); if (!color.isValid()) return; m_strokeColor = color; m_strokeButton->setStyleSheet(colorButtonStyle(color)); m_canvas->setStrokeColor(color);
 }
 
+void MainWindow::chooseSecondFillColor()
+{
+    const QColor color = QColorDialog::getColor(m_secondFillColor, this, QStringLiteral("选择渐变结束颜色"), QColorDialog::ShowAlphaChannel); if (!color.isValid()) return; m_secondFillColor = color; m_secondFillButton->setStyleSheet(colorButtonStyle(color));
+}
+
 void MainWindow::updateWindowTitle()
 {
-    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.1 Native").arg(m_modified ? "*" : "", name));
+    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.2 Native").arg(m_modified ? "*" : "", name));
 }
 
 void MainWindow::setStatus(const QString &message) { if (m_statusLabel) m_statusLabel->setText(message); }

@@ -9,8 +9,12 @@
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGraphicsTextItem>
+#include <QLinearGradient>
 #include <QJsonDocument>
 #include <QPainterPath>
+#include <QRadialGradient>
+#include <QTextDocument>
+#include <QTextOption>
 
 namespace {
 constexpr int KindRole = 0;
@@ -18,6 +22,8 @@ constexpr int NameRole = 1;
 constexpr int LayerRole = 2;
 constexpr int LockedRole = 3;
 constexpr int VisibleRole = 4;
+constexpr int TextBoxHeightRole = 5;
+constexpr int ParagraphRole = 6;
 
 QJsonObject rectToJson(const QRectF &rect)
 {
@@ -38,6 +44,36 @@ QTransform transformFromJson(const QJsonObject &j)
 {
     return {j["m11"].toDouble(1.0), j["m12"].toDouble(), j["m21"].toDouble(),
             j["m22"].toDouble(1.0), j["dx"].toDouble(), j["dy"].toDouble()};
+}
+
+QJsonObject brushToJson(const QBrush &brush)
+{
+    QJsonObject json {{"style", static_cast<int>(brush.style())}, {"color", brush.color().name(QColor::HexArgb)}, {"transform", transformToJson(brush.transform())}};
+    const QGradient *gradient = brush.gradient(); if (!gradient) return json;
+    json["gradientType"] = static_cast<int>(gradient->type()); json["spread"] = static_cast<int>(gradient->spread()); json["coordinateMode"] = static_cast<int>(gradient->coordinateMode());
+    QJsonArray stops; for (const auto &stop : gradient->stops()) stops.append(QJsonObject {{"at", stop.first}, {"color", stop.second.name(QColor::HexArgb)}}); json["stops"] = stops;
+    if (gradient->type() == QGradient::LinearGradient) {
+        const auto *linear = static_cast<const QLinearGradient *>(gradient); json["start"] = rectToJson(QRectF(linear->start(), QSizeF())); json["end"] = rectToJson(QRectF(linear->finalStop(), QSizeF()));
+    } else if (gradient->type() == QGradient::RadialGradient) {
+        const auto *radial = static_cast<const QRadialGradient *>(gradient); json["center"] = rectToJson(QRectF(radial->center(), QSizeF())); json["focal"] = rectToJson(QRectF(radial->focalPoint(), QSizeF())); json["radius"] = radial->radius();
+    }
+    return json;
+}
+
+QBrush brushFromJson(const QJsonObject &json, const QColor &fallback = Qt::transparent)
+{
+    if (json.isEmpty()) return QBrush(fallback);
+    const auto gradientType = static_cast<QGradient::Type>(json["gradientType"].toInt(static_cast<int>(QGradient::NoGradient)));
+    QGradientStops stops; for (const QJsonValue &value : json["stops"].toArray()) { const QJsonObject stop = value.toObject(); stops.append({stop["at"].toDouble(), QColor(stop["color"].toString())}); }
+    QBrush brush;
+    if (gradientType == QGradient::LinearGradient) {
+        QLinearGradient gradient(rectFromJson(json["start"].toObject()).topLeft(), rectFromJson(json["end"].toObject()).topLeft()); gradient.setStops(stops); gradient.setSpread(static_cast<QGradient::Spread>(json["spread"].toInt())); gradient.setCoordinateMode(static_cast<QGradient::CoordinateMode>(json["coordinateMode"].toInt())); brush = QBrush(gradient);
+    } else if (gradientType == QGradient::RadialGradient) {
+        QRadialGradient gradient(rectFromJson(json["center"].toObject()).topLeft(), json["radius"].toDouble(), rectFromJson(json["focal"].toObject()).topLeft()); gradient.setStops(stops); gradient.setSpread(static_cast<QGradient::Spread>(json["spread"].toInt())); gradient.setCoordinateMode(static_cast<QGradient::CoordinateMode>(json["coordinateMode"].toInt())); brush = QBrush(gradient);
+    } else {
+        brush = QBrush(QColor(json["color"].toString(fallback.name(QColor::HexArgb)))); brush.setStyle(static_cast<Qt::BrushStyle>(json["style"].toInt(static_cast<int>(Qt::SolidPattern))));
+    }
+    brush.setTransform(transformFromJson(json["transform"].toObject())); return brush;
 }
 
 QJsonObject penToJson(const QPen &pen)
@@ -96,11 +132,11 @@ QJsonObject serializeOne(QGraphicsItem *item)
     if (kind == "rectangle") {
         const auto *shape = static_cast<QGraphicsRectItem *>(item);
         json["rect"] = rectToJson(shape->rect()); json["pen"] = penToJson(shape->pen());
-        json["fill"] = shape->brush().color().name(QColor::HexArgb);
+        json["fill"] = shape->brush().color().name(QColor::HexArgb); json["brush"] = brushToJson(shape->brush());
     } else if (kind == "ellipse") {
         const auto *shape = static_cast<QGraphicsEllipseItem *>(item);
         json["rect"] = rectToJson(shape->rect()); json["pen"] = penToJson(shape->pen());
-        json["fill"] = shape->brush().color().name(QColor::HexArgb);
+        json["fill"] = shape->brush().color().name(QColor::HexArgb); json["brush"] = brushToJson(shape->brush());
     } else if (kind == "line") {
         const auto *shape = static_cast<QGraphicsLineItem *>(item);
         const QLineF line = shape->line();
@@ -108,7 +144,7 @@ QJsonObject serializeOne(QGraphicsItem *item)
     } else if (kind == "path" || kind == "clip") {
         const auto *shape = static_cast<QGraphicsPathItem *>(item);
         json["path"] = pathToJson(shape->path()); json["pen"] = penToJson(shape->pen());
-        json["fill"] = shape->brush().color().name(QColor::HexArgb);
+        json["fill"] = shape->brush().color().name(QColor::HexArgb); json["brush"] = brushToJson(shape->brush());
         json["fillStyle"] = static_cast<int>(shape->brush().style());
         if (kind == "clip") json["children"] = DocumentIO::serializeItems(item->childItems());
     } else if (kind == "text") {
@@ -116,6 +152,7 @@ QJsonObject serializeOne(QGraphicsItem *item)
         json["text"] = text->toPlainText(); json["color"] = text->defaultTextColor().name(QColor::HexArgb);
         json["font"] = QJsonObject {{"family", text->font().family()}, {"size", text->font().pointSizeF()},
                                      {"bold", text->font().bold()}, {"italic", text->font().italic()}};
+        json["textWidth"] = text->textWidth(); json["textBoxHeight"] = item->data(TextBoxHeightRole).toDouble(); json["paragraph"] = item->data(ParagraphRole).toBool(); json["alignment"] = static_cast<int>(text->document()->defaultTextOption().alignment());
     } else if (kind == "group") {
         json["children"] = DocumentIO::serializeItems(item->childItems());
     }
@@ -143,10 +180,10 @@ QGraphicsItem *restoreOne(QGraphicsScene *scene, const QJsonObject &json, const 
     QGraphicsItem *item = nullptr;
     if (kind == "rectangle") {
         auto *shape = new QGraphicsRectItem(rectFromJson(json["rect"].toObject()));
-        shape->setPen(penFromJson(json["pen"].toObject())); shape->setBrush(QColor(json["fill"].toString())); item = shape;
+        shape->setPen(penFromJson(json["pen"].toObject())); shape->setBrush(json.contains("brush") ? brushFromJson(json["brush"].toObject()) : QBrush(QColor(json["fill"].toString()))); item = shape;
     } else if (kind == "ellipse") {
         auto *shape = new QGraphicsEllipseItem(rectFromJson(json["rect"].toObject()));
-        shape->setPen(penFromJson(json["pen"].toObject())); shape->setBrush(QColor(json["fill"].toString())); item = shape;
+        shape->setPen(penFromJson(json["pen"].toObject())); shape->setBrush(json.contains("brush") ? brushFromJson(json["brush"].toObject()) : QBrush(QColor(json["fill"].toString()))); item = shape;
     } else if (kind == "line") {
         const QJsonArray a = json["line"].toArray(); if (a.size() != 4) return nullptr;
         auto *shape = new QGraphicsLineItem(QLineF(a[0].toDouble(), a[1].toDouble(), a[2].toDouble(), a[3].toDouble()));
@@ -154,13 +191,13 @@ QGraphicsItem *restoreOne(QGraphicsScene *scene, const QJsonObject &json, const 
     } else if (kind == "path" || kind == "clip") {
         auto *shape = new QGraphicsPathItem(pathFromJson(json["path"].toArray()));
         shape->setPen(penFromJson(json["pen"].toObject()));
-        QBrush brush(QColor(json["fill"].toString("#00000000")));
-        brush.setStyle(static_cast<Qt::BrushStyle>(json["fillStyle"].toInt(static_cast<int>(Qt::NoBrush))));
+        QBrush brush = json.contains("brush") ? brushFromJson(json["brush"].toObject()) : QBrush(QColor(json["fill"].toString("#00000000")));
+        if (!json.contains("brush")) brush.setStyle(static_cast<Qt::BrushStyle>(json["fillStyle"].toInt(static_cast<int>(Qt::NoBrush))));
         shape->setBrush(brush); item = shape;
     } else if (kind == "text") {
         auto *text = new QGraphicsTextItem(json["text"].toString()); const QJsonObject f = json["font"].toObject();
         QFont font(f["family"].toString("Microsoft YaHei")); font.setPointSizeF(f["size"].toDouble(24.0)); font.setBold(f["bold"].toBool()); font.setItalic(f["italic"].toBool());
-        text->setFont(font); text->setDefaultTextColor(QColor(json["color"].toString("#ff222222"))); item = text;
+        text->setFont(font); text->setDefaultTextColor(QColor(json["color"].toString("#ff222222"))); text->setTextWidth(json["textWidth"].toDouble(-1.0)); QTextOption option = text->document()->defaultTextOption(); option.setAlignment(static_cast<Qt::AlignmentFlag>(json["alignment"].toInt(static_cast<int>(Qt::AlignLeft)))); text->document()->setDefaultTextOption(option); text->setData(TextBoxHeightRole, json["textBoxHeight"].toDouble()); text->setData(ParagraphRole, json["paragraph"].toBool()); item = text;
     } else if (kind == "group") {
         auto *group = new QGraphicsItemGroup(); scene->addItem(group); applyBase(group, json, offset);
         const auto children = DocumentIO::restoreItems(scene, json["children"].toArray());
@@ -182,7 +219,7 @@ QJsonObject DocumentIO::serializeDocument(QGraphicsScene *scene, const QRectF &p
 {
     QList<QGraphicsItem *> roots;
     for (QGraphicsItem *item : scene->items(Qt::AscendingOrder)) if (!item->parentItem()) roots.append(item);
-    return {{"format", "JiangxinVectorDocument"}, {"version", 2}, {"page", rectToJson(pageRect)},
+    return {{"format", "JiangxinVectorDocument"}, {"version", 3}, {"page", rectToJson(pageRect)},
             {"items", serializeItems(roots)}};
 }
 

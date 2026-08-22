@@ -20,6 +20,8 @@ constexpr int KindRole = 0;
 constexpr int NameRole = 1;
 constexpr int LayerRole = 2;
 constexpr int VisibleRole = 4;
+constexpr int TextBoxHeightRole = 5;
+constexpr int ParagraphRole = 6;
 }
 
 CanvasView::CanvasView(QWidget *parent) : QGraphicsView(parent)
@@ -49,7 +51,7 @@ void CanvasView::setTool(Tool tool)
     setDragMode(tool == Tool::Select ? QGraphicsView::RubberBandDrag
                                     : tool == Tool::Pan ? QGraphicsView::ScrollHandDrag
                                                         : QGraphicsView::NoDrag);
-    viewport()->setCursor(tool == Tool::Text ? Qt::IBeamCursor
+    viewport()->setCursor(tool == Tool::Text || tool == Tool::ParagraphText ? Qt::IBeamCursor
                           : tool == Tool::Zoom ? Qt::PointingHandCursor
                           : tool == Tool::Pan ? Qt::OpenHandCursor
                           : tool == Tool::Select || tool == Tool::Node ? Qt::ArrowCursor
@@ -181,18 +183,28 @@ void CanvasView::mousePressEvent(QMouseEvent *event)
         zoomBy(event->modifiers().testFlag(Qt::ShiftModifier) ? 0.8 : 1.25);
         return;
     }
-    if (m_tool == Tool::Text) {
+    if (m_tool == Tool::Text || m_tool == Tool::ParagraphText) {
         bool ok = false;
         const QString text = QInputDialog::getMultiLineText(this, QStringLiteral("添加文字"),
                                                             QStringLiteral("文字内容"), QStringLiteral("双击编辑文字"), &ok);
         if (ok && !text.isEmpty()) {
             auto *item = new QGraphicsTextItem(text);
             item->setDefaultTextColor(m_fillColor);
-            QFont font(QStringLiteral("Microsoft YaHei"), 24);
+            const bool paragraph = m_tool == Tool::ParagraphText;
+            QFont font(QStringLiteral("Microsoft YaHei"), paragraph ? 18 : 24);
             item->setFont(font);
+            if (paragraph) {
+                item->setTextWidth(360.0);
+                item->setData(TextBoxHeightRole, 260.0);
+                item->setData(ParagraphRole, true);
+            }
             item->setPos(point);
-            prepareItem(item, QStringLiteral("text"), text.left(20));
-            Q_EMIT documentCommitted(QStringLiteral("添加文字"));
+            prepareItem(item, QStringLiteral("text"), paragraph ? QStringLiteral("段落文本") : text.left(20));
+            if (paragraph) {
+                item->setData(TextBoxHeightRole, 260.0);
+                item->setData(ParagraphRole, true);
+            }
+            Q_EMIT documentCommitted(paragraph ? QStringLiteral("添加段落文本") : QStringLiteral("添加美术字"));
         }
         return;
     }
