@@ -13,7 +13,7 @@ class CanvasView final : public QGraphicsView
     Q_OBJECT
 
 public:
-    enum class Tool { Select, Node, Bezier, Freehand, Rectangle, Ellipse, Line, Text, Zoom, Pan };
+    enum class Tool { Select, Node, Bezier, Freehand, Rectangle, Ellipse, Line, Text, ParagraphText, Zoom, Pan };
 
     explicit CanvasView(QWidget *parent = nullptr);
 
