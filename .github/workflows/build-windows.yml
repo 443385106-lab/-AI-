@@ -24,7 +24,8 @@ jobs:
           $base64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ""
           [System.IO.File]::WriteAllBytes("assets/app-icon.ico", [Convert]::FromBase64String($base64))
           Add-Type -AssemblyName System.Drawing
-          $icon = New-Object System.Drawing.Icon((Resolve-Path "assets/app-icon.ico"), 256, 256)
+          $iconPath = (Resolve-Path "assets/app-icon.ico").Path
+          $icon = [System.Drawing.Icon]::new($iconPath, 256, 256)
           $bitmap = $icon.ToBitmap()
           $pngPath = Join-Path (Resolve-Path "assets").Path "app-icon.png"
           $bitmap.Save($pngPath, [System.Drawing.Imaging.ImageFormat]::Png)
