@@ -1,9 +1,17 @@
 const $=id=>document.getElementById(id);
-let logo='',reference='',aiBoards=[],visibleLocalTemplates=[],analysis={borderInset:14,logoPosition:'top-left'};
+let logo='',reference='',aiBoards=[],visibleLocalTemplates=[],previewZoom=1,analysis={borderInset:14,logoPosition:'top-left'};
 const themes={red:{main:'#b51f24',light:'#fff7f3',line:'#e8c4b6'},blue:{main:'#1261a0',light:'#f1f8ff',line:'#bad6ed'},green:{main:'#26804a',light:'#f2fff6',line:'#b8dcc7'},coffee:{main:'#7a5034',light:'#fffaf3',line:'#ddcab4'}};
 const escapeXML=s=>(s||'').replace(/[<>&'"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;'}[c]));
 const dataURL=file=>new Promise(resolve=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.readAsDataURL(file)});
 function wrap(text,max){const out=[];(text||'').split(/\n/).forEach(p=>{if(!p){out.push('');return}let s='';for(const c of p){s+=c;if(s.length>=max){out.push(s);s=''}}if(s)out.push(s)});return out}
+const cnNumbers=['一','二','三','四','五','六','七','八','九','十','十一','十二','十三','十四','十五','十六','十七','十八','十九','二十'];
+function clauseOrder(s){if(/总则|适用|目的|原则|负责|职责/.test(s))return 0;if(/培训|教育|上岗|资格/.test(s))return 1;if(/操作|执行|使用|作业|流程/.test(s))return 2;if(/检查|巡查|维护|记录|台账|考核/.test(s))return 3;if(/异常|事故|应急|报告|处置/.test(s))return 4;if(/复核|修订|附则/.test(s))return 5;return 2}
+function normalizeBody(text){
+  const rows=(text||'').replace(/\r/g,'\n').split(/\n+/).map(x=>x.trim()).filter(Boolean).map((x,index)=>({text:x.replace(/^(?:第?[一二三四五六七八九十百\d]+(?:条|[、.．）)]))\s*/,'').replace(/^[-•·*]+\s*/,'').trim(),index})).filter(x=>x.text);
+  rows.sort((a,b)=>clauseOrder(a.text)-clauseOrder(b.text)||a.index-b.index);
+  return [...new Set(rows.map(x=>x.text))].slice(0,20).map((x,i)=>`${cnNumbers[i]||i+1}、${x.replace(/[；。]?$/,'。')}`).join('\n\n');
+}
+function requestedPolicyNames(){return [...new Set($('policyName').value.split(/[\n；;]+/).map(x=>x.trim()).filter(Boolean))].slice(0,20)}
 function currentData(extra={}){return {title:$('title').value,body:$('body').value,sign:$('sign').value,width:+$('width').value,height:+$('height').value,theme:$('theme').value,padding:+$('padding').value,titleSize:+$('titleSize').value,bodySize:+$('bodySize').value,dpi:+$('dpi').value,bleed:+$('bleed').value,cropMarks:$('cropMarks').checked,cmyk:$('cmyk').checked,logo,reference,opacity:+$('opacity').value,analysis,...extra}}
 function layoutFor(d){
   const W=800,H=Math.round(W*d.height/d.width),bleedPx=(d.bleed/10)*(W/d.width),ox=bleedPx,oy=bleedPx,pad=d.padding||25;
@@ -19,30 +27,36 @@ function makeSVG(d,opts={}){
   const totalWcm=d.width+d.bleed/5,totalHcm=d.height+d.bleed/5;
   const attrW=opts.raster?`${Math.round(totalWcm/2.54*(opts.dpi||d.dpi||300))}px`:`${totalWcm}cm`,attrH=opts.raster?`${Math.round(totalHcm/2.54*(opts.dpi||d.dpi||300))}px`:`${totalHcm}cm`;
   const crop=d.cropMarks&&l.bleedPx>0?`<g stroke="#111" stroke-width="1"><path d="M0 ${l.oy}H${l.ox-3}M${l.ox+l.W+3} ${l.oy}H${l.FW}M0 ${l.oy+l.H}H${l.ox-3}M${l.ox+l.W+3} ${l.oy+l.H}H${l.FW}M${l.ox} 0V${l.oy-3}M${l.ox} ${l.oy+l.H+3}V${l.FH}M${l.ox+l.W} 0V${l.oy-3}M${l.ox+l.W} ${l.oy+l.H+3}V${l.FH}</g>`:'';
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${attrW}" height="${attrH}" viewBox="0 0 ${l.FW} ${l.FH}"><metadata>{\"trim_cm\":\"${d.width}x${d.height}\",\"bleed_mm\":${d.bleed},\"dpi\":${d.dpi},\"color_target\":\"${d.cmyk?'CMYK':'RGB'}\"}</metadata><rect width="${l.FW}" height="${l.FH}" fill="${t.light}"/>${d.reference?`<image href="${d.reference}" x="${l.ox}" y="${l.oy}" width="${l.W}" height="${l.H}" preserveAspectRatio="xMidYMid slice" opacity="${d.opacity/100}"/>`:''}<rect x="${l.ox+bi}" y="${l.oy+bi}" width="${l.W-bi*2}" height="${l.H-bi*2}" rx="4" fill="none" stroke="${t.main}" stroke-width="8"/><rect x="${l.ox+32}" y="${l.oy+32}" width="${l.W-64}" height="${l.H-64}" fill="none" stroke="${t.line}" stroke-width="2"/><rect x="${l.ox}" y="${l.oy}" width="${l.W}" height="${l.H}" fill="none" stroke="#555" stroke-width="1" stroke-dasharray="6 5"/><path d="M${l.ox+48} ${l.oy+122}H${l.ox+l.W-48}" stroke="${t.main}" stroke-width="3"/><text x="${l.ox+l.W/2}" y="${l.oy+98}" text-anchor="middle" font-family="Microsoft YaHei" font-weight="700" font-size="${l.ts}" fill="${t.main}">${escapeXML(d.title)}</text>${d.logo?`<image href="${d.logo}" x="${lx}" y="${ly}" width="62" height="62" preserveAspectRatio="xMidYMid meet"/>`:''}<g font-family="Microsoft YaHei" font-size="${l.bs}" fill="#20242a">${l.lines.map((x,i)=>`<text x="${l.ox+l.pad+32}" y="${l.oy+175+i*l.lineH}">${escapeXML(x)}</text>`).join('')}</g><text x="${l.ox+l.W-l.pad-32}" y="${l.oy+l.H-55}" text-anchor="end" font-family="Microsoft YaHei" font-size="${l.bs*.8}" fill="#333">${escapeXML(d.sign)}</text>${crop}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${attrW}" height="${attrH}" viewBox="0 0 ${l.FW} ${l.FH}"><metadata>{\"trim_cm\":\"${d.width}x${d.height}\",\"bleed_mm\":${d.bleed},\"dpi\":${d.dpi},\"color_target\":\"${d.cmyk?'CMYK':'RGB'}\"}</metadata><rect width="${l.FW}" height="${l.FH}" fill="${t.light}"/>${d.reference?`<image href="${d.reference}" x="${l.ox}" y="${l.oy}" width="${l.W}" height="${l.H}" preserveAspectRatio="xMidYMid slice" opacity="${d.opacity/100}"/>`:''}<rect x="${l.ox+bi}" y="${l.oy+bi}" width="${l.W-bi*2}" height="${l.H-bi*2}" rx="4" fill="none" stroke="${t.main}" stroke-width="8"/><rect x="${l.ox+32}" y="${l.oy+32}" width="${l.W-64}" height="${l.H-64}" fill="none" stroke="${t.line}" stroke-width="2"/><rect x="${l.ox}" y="${l.oy}" width="${l.W}" height="${l.H}" fill="none" stroke="#555" stroke-width="1" stroke-dasharray="6 5"/><path d="M${l.ox+48} ${l.oy+122}H${l.ox+l.W-48}" stroke="${t.main}" stroke-width="3"/><text x="${l.ox+l.W/2}" y="${l.oy+98}" text-anchor="middle" font-family="Microsoft YaHei" font-weight="700" font-size="${l.ts}" fill="${t.main}">${escapeXML(d.title)}</text>${d.logo?`<image href="${d.logo}" x="${lx}" y="${ly}" width="62" height="62" preserveAspectRatio="xMidYMid meet"/>`:''}<g font-family="Microsoft YaHei" font-size="${l.bs}" fill="#20242a" letter-spacing=".4">${l.lines.map((x,i)=>{const lead=/^(?:[一二三四五六七八九十百]+|\d+)、/.test(x),indent=x&&!lead?26:0;return `<text x="${l.ox+l.pad+32+indent}" y="${l.oy+175+i*l.lineH}" font-weight="${lead?600:400}">${escapeXML(x)}</text>`}).join('')}</g><text x="${l.ox+l.W-l.pad-32}" y="${l.oy+l.H-55}" text-anchor="end" font-family="Microsoft YaHei" font-size="${l.bs*.8}" fill="#333">${escapeXML(d.sign)}</text>${crop}</svg>`;
 }
+function applyPreviewZoom(){
+  const stage=$('stage'),b=$('board'),l=layoutFor(currentData()),fit=Math.max(120,Math.min((stage.clientWidth-40)*.92,(stage.clientHeight-40)*.92*l.FW/l.FH));
+  b.style.width=`${fit*previewZoom}px`;b.style.height='auto';b.style.maxWidth='none';b.style.maxHeight='none';$('zoomValue').textContent=`${Math.round(previewZoom*100)}%`;$('zoomRange').value=Math.round(previewZoom*100);
+}
+function setPreviewZoom(value){previewZoom=Math.max(.25,Math.min(2,value));applyPreviewZoom()}
 function render(){
   const d=currentData(),l=layoutFor(d),parsed=new DOMParser().parseFromString(makeSVG(d),'image/svg+xml').documentElement,b=$('board');
   ['width','height','viewBox'].forEach(a=>b.setAttribute(a,parsed.getAttribute(a)));b.innerHTML=parsed.innerHTML;b.style.aspectRatio=`${l.FW}/${l.FH}`;
   $('overflowState').className='small-note '+(l.overflow?'overflow':'ok');$('overflowState').textContent=l.overflow?'内容仍可能溢出，请减少文字或增大展板':'文字空间正常；实际正文字号 '+l.bs;
+  requestAnimationFrame(applyPreviewZoom);
 }
 function pdfHtml(svg,d){const w=d.width+d.bleed/5,h=d.height+d.bleed/5;return `<style>@page{size:${w}cm ${h}cm;margin:0}body{margin:0}svg{width:100%;height:100%}</style>${svg}`}
 function setStatus(s){$('status').textContent=s}
 async function rasterData(d,type){const svg=makeSVG(d,{raster:true,dpi:d.dpi}),img=new Image();await new Promise((ok,fail)=>{img.onload=ok;img.onerror=fail;img.src='data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(svg)))});const c=document.createElement('canvas');c.width=img.width;c.height=img.height;c.getContext('2d').drawImage(img,0,0);return c.toDataURL(type==='jpg'?'image/jpeg':'image/png',.95)}
 
-document.querySelectorAll('input,textarea,select').forEach(e=>e.addEventListener('input',()=>{if(!['templateSearch','localTemplateSearch','localIndustry','apiKey','endpoint','model'].includes(e.id))render()}));
+document.querySelectorAll('input,textarea,select').forEach(e=>e.addEventListener('input',()=>{if(!['templateSearch','localTemplateSearch','localIndustry','apiKey','endpoint','model','policyName','zoomRange'].includes(e.id))render()}));
 $('logo').onchange=async e=>{if(e.target.files[0]){logo=await dataURL(e.target.files[0]);render()}};
 $('reference').onchange=async e=>{if(e.target.files[0]){reference=await dataURL(e.target.files[0]);render();$('analysisResult').textContent='样图已载入，可执行OCR和版式识别'}};
 
 document.querySelectorAll('[data-export]').forEach(b=>b.onclick=async()=>{try{const type=b.dataset.export,d=currentData(),svg=makeSVG(d);setStatus('正在导出 '+type.toUpperCase()+'…');if(type==='svg')await boardAPI.saveSVG(svg);else if(type==='cdr')await boardAPI.saveCDR({svg,cmyk:d.cmyk});else if(type==='pdf')await boardAPI.savePDF({html:pdfHtml(svg,d)});else await boardAPI.saveImage({ext:type,data:await rasterData(d,type)});setStatus('导出完成')}catch(e){setStatus('导出失败：'+e.message)}});
 
 function fillPolicyTypes(){const types=INDUSTRIES[$('industry').value]||[];$('policyTypes').innerHTML=types.map((x,i)=>`<option ${i===0?'selected':''}>${x}</option>`).join('');if(!$('policyName').value&&types[0])$('policyName').value=types[0]}
-function applyBoard(b){$('title').value=b.title;$('body').value=b.body;$('theme').value=b.theme||'red';$('width').value=b.recommended_width_cm||40;$('height').value=b.recommended_height_cm||60;$('sign').value=$('company').value;render();setStatus(b.review_note?`已排版；复核提示：${b.review_note}`:'AI内容已排版')}
+function applyBoard(b){$('title').value=b.title;$('body').value=normalizeBody(b.body);$('theme').value=b.theme||'red';$('width').value=b.recommended_width_cm||40;$('height').value=b.recommended_height_cm||60;$('sign').value=$('company').value;render();setStatus(b.review_note?`已整理排版；复核提示：${b.review_note}`:'AI内容已自动整理排版')}
 function showAIResults(){const box=$('aiResults');box.innerHTML=aiBoards.map((b,i)=>`<div class="result" data-index="${i}"><b>${i+1}. ${escapeXML(b.title)}</b><span>点击载入</span>${b.review_note?`<div class="review">需复核：${escapeXML(b.review_note)}</div>`:''}</div>`).join('');box.querySelectorAll('.result').forEach(x=>x.onclick=()=>applyBoard(aiBoards[+x.dataset.index]));if(aiBoards[0])applyBoard(aiBoards[0])}
 Object.keys(INDUSTRIES).forEach(x=>$('industry').add(new Option(x,x)));fillPolicyTypes();$('industry').addEventListener('change',fillPolicyTypes);$('policyTypes').addEventListener('change',()=>{const x=$('policyTypes').selectedOptions[0];if(x)$('policyName').value=x.value});
 Object.keys(INDUSTRIES).forEach(x=>$('localIndustry').add(new Option(x,x)));
 function applyLocalTemplate(t){
-  $('policyName').value=t.title;$('title').value=t.title;$('body').value=t.body;$('theme').value=t.theme;$('width').value=t.width;$('height').value=t.height;
+  $('policyName').value=t.title;$('title').value=t.title;$('body').value=normalizeBody(t.body);$('theme').value=t.theme;$('width').value=t.width;$('height').value=t.height;
   $('industry').value=t.industry;fillPolicyTypes();$('templateIndustry').value=t.industry;aiBoards=[];render();setStatus(`已套用本地模板：${t.industry} / ${t.title}；交付前请人工复核`);
 }
 function renderLocalTemplates(){
@@ -55,16 +69,18 @@ function renderLocalTemplates(){
 $('localIndustry').onchange=renderLocalTemplates;$('localTemplateSearch').oninput=renderLocalTemplates;renderLocalTemplates();
 $('saveAI').onclick=async()=>{await boardAPI.saveAIConfig({endpoint:$('endpoint').value.trim(),model:$('model').value.trim(),apiKey:$('apiKey').value.trim()});setStatus('AI连接设置已保存在本机')};
 async function generateBoards(advanced=false){
-  const name=$('policyName').value.trim(),selected=[...$('policyTypes').selectedOptions].map(x=>x.value),types=advanced?selected:(name?[name]:[]);
+  const names=requestedPolicyNames(),selected=[...$('policyTypes').selectedOptions].map(x=>x.value),types=advanced?selected:names;
   if(!types.length)return setStatus('请输入需要制作的制度名称');
   if(!$('apiKey').value.trim())return setStatus('请先展开“AI连接设置”并填写API密钥');
   const button=advanced?$('aiGenerate'):$('quickGenerate');
-  try{button.disabled=true;setStatus(`正在生成“${name||types[0]}”并自动排版…`);const data=await boardAPI.generateAI({endpoint:$('endpoint').value.trim(),model:$('model').value.trim(),apiKey:$('apiKey').value.trim(),policyName:name,autoMode:!advanced,industry:advanced?$('industry').value:'自动识别',types,count:advanced?+$('boardCount').value:1,words:+$('words').value,company:$('company').value.trim(),requirements:$('requirements').value.trim()});aiBoards=(data.boards||[]).slice(0,20);showAIResults();setStatus(`已生成并排版 ${aiBoards.length} 张展板`)}catch(e){setStatus('AI生成失败：'+e.message)}finally{button.disabled=false}
+  try{button.disabled=true;setStatus(`正在生成 ${types.length} 张制度牌并自动整理排版…`);const data=await boardAPI.generateAI({endpoint:$('endpoint').value.trim(),model:$('model').value.trim(),apiKey:$('apiKey').value.trim(),policyNames:types,autoMode:!advanced,industry:advanced?$('industry').value:'自动识别',types,count:advanced?Math.max(types.length,+$('boardCount').value):types.length,words:+$('words').value,company:$('company').value.trim(),requirements:$('requirements').value.trim()});aiBoards=(data.boards||[]).slice(0,20).map(b=>({...b,body:normalizeBody(b.body)}));showAIResults();setStatus(`已生成、排序并排版 ${aiBoards.length} 张展板`)}catch(e){setStatus('AI生成失败：'+e.message)}finally{button.disabled=false}
 }
 $('quickGenerate').onclick=()=>generateBoards(false);
 $('aiGenerate').onclick=()=>generateBoards(true);
-$('policyName').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();generateBoards(false)}});
+$('policyName').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();generateBoards(false)}});
 document.querySelectorAll('[data-policy]').forEach(b=>b.onclick=()=>{$('policyName').value=b.dataset.policy;$('policyName').focus()});
+$('sortText').onclick=()=>{$('body').value=normalizeBody($('body').value);render();setStatus('正文已按职责、执行、检查、应急顺序整理并美化')};
+$('zoomRange').oninput=e=>setPreviewZoom(+e.target.value/100);$('zoomOut').onclick=()=>setPreviewZoom(previewZoom-.1);$('zoomIn').onclick=()=>setPreviewZoom(previewZoom+.1);$('zoomFit').onclick=()=>setPreviewZoom(1);window.addEventListener('resize',applyPreviewZoom);
 
 $('ocrButton').onclick=async()=>{if(!reference)return setStatus('请先上传样图');try{$('ocrButton').disabled=true;setStatus('正在进行中文OCR识别…');const r=await boardAPI.ocrImage(reference),lines=r.text.split(/\n/).map(x=>x.trim()).filter(Boolean);if(lines.length){if(lines[0].length<=32)$('title').value=lines.shift();$('body').value=lines.join('\n');render()}setStatus(`OCR完成，平均置信度 ${Math.round(r.confidence)}%`)}catch(e){setStatus('OCR失败：'+e.message)}finally{$('ocrButton').disabled=false}};
 function colorDistance(a,b){return Math.hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2])}
