@@ -6,6 +6,10 @@
 #include <QActionGroup>
 #include <QCloseEvent>
 #include <QColorDialog>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QDockWidget>
@@ -13,6 +17,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QFormLayout>
 #include <QFontComboBox>
 #include <QAbstractGraphicsShapeItem>
 #include <QGraphicsItemGroup>
@@ -44,6 +49,8 @@
 #include <QPdfWriter>
 #include <QPushButton>
 #include <QProgressDialog>
+#include <QPlainTextEdit>
+#include <QRegularExpression>
 #include <QSet>
 #include <QStatusBar>
 #include <QSvgGenerator>
@@ -150,6 +157,144 @@ QPen itemPen(QGraphicsItem *item)
     if (auto *line = dynamic_cast<QGraphicsLineItem *>(item)) return line->pen();
     return QPen(QColor(34, 34, 34), 2.0);
 }
+
+struct BoardTheme {
+    QString name;
+    QColor primary;
+    QColor accent;
+    QColor background;
+};
+
+QList<BoardTheme> boardThemes()
+{
+    return {
+        {QStringLiteral("政务蓝"), QColor("#145DA0"), QColor("#5CA9E6"), QColor("#F4F9FD")},
+        {QStringLiteral("安全红"), QColor("#B3262D"), QColor("#E9A3A6"), QColor("#FFF7F5")},
+        {QStringLiteral("食品绿"), QColor("#237A4B"), QColor("#78BE91"), QColor("#F3FAF5")},
+        {QStringLiteral("车间橙"), QColor("#C95F18"), QColor("#F0B16C"), QColor("#FFF8ED")},
+        {QStringLiteral("医疗蓝"), QColor("#117F9F"), QColor("#70C4D5"), QColor("#F1FBFD")},
+        {QStringLiteral("简约金"), QColor("#8C6317"), QColor("#D6B565"), QColor("#FFFBF0")}
+    };
+}
+
+QStringList boardSizeLabels()
+{
+    return {QStringLiteral("40×60厘米 竖版"), QStringLiteral("50×70厘米 竖版"), QStringLiteral("60×80厘米 竖版"),
+            QStringLiteral("60×90厘米 竖版"), QStringLiteral("80×120厘米 竖版"), QStringLiteral("60×40厘米 横版"),
+            QStringLiteral("70×50厘米 横版"), QStringLiteral("80×60厘米 横版")};
+}
+
+QSizeF boardSizeMillimeters(const QString &label)
+{
+    if (label.startsWith(QStringLiteral("50×70"))) return {500, 700};
+    if (label.startsWith(QStringLiteral("60×80"))) return {600, 800};
+    if (label.startsWith(QStringLiteral("60×90"))) return {600, 900};
+    if (label.startsWith(QStringLiteral("80×120"))) return {800, 1200};
+    if (label.startsWith(QStringLiteral("60×40"))) return {600, 400};
+    if (label.startsWith(QStringLiteral("70×50"))) return {700, 500};
+    if (label.startsWith(QStringLiteral("80×60"))) return {800, 600};
+    return {400, 600};
+}
+
+QString policyBodyForTitle(const QString &title)
+{
+    if (title.contains(QStringLiteral("消防")) || title.contains(QStringLiteral("防火"))) return QStringLiteral(
+        "一、严格落实消防安全责任制，明确责任人、管理人和各岗位职责。\n"
+        "二、保持疏散通道、安全出口和消防车通道畅通，严禁占用、堵塞或锁闭。\n"
+        "三、按规定配置灭火器、消火栓、应急照明和疏散标志，定期检查并做好记录。\n"
+        "四、严禁违规动火、私拉乱接电线和超负荷用电，重点部位实行专人管理。\n"
+        "五、每日开展防火巡查，发现隐患立即整改；不能立即整改的，应采取防范措施并上报。\n"
+        "六、定期组织消防培训和应急演练，使员工掌握报警、灭火、疏散和逃生方法。\n"
+        "七、发生火情立即报警，启动预案，组织人员有序疏散，严禁贪恋财物或盲目施救。\n"
+        "八、消防检查、培训、演练和隐患整改资料应真实完整，按规定归档备查。");
+    if (title.contains(QStringLiteral("食品")) || title.contains(QStringLiteral("卫生"))) return QStringLiteral(
+        "一、严格执行食品安全法律法规和操作规范，落实食品安全主体责任。\n"
+        "二、从业人员须持有效健康证明上岗，保持个人卫生，按要求穿戴清洁工作衣帽。\n"
+        "三、采购食品及原料应查验供货者资质、合格证明和票据，建立完整进货记录。\n"
+        "四、食品分类、分架、离墙、离地存放，生熟分开，防止交叉污染。\n"
+        "五、严格控制加工温度、时间和储存条件，不得使用过期、腐败变质或来源不明食品。\n"
+        "六、场所、设备、工具和餐饮具及时清洗消毒，防鼠、防蝇、防虫设施保持有效。\n"
+        "七、每日开展食品安全自查，发现问题立即停止相关操作并采取整改措施。\n"
+        "八、发生疑似食品安全事故时，立即封存相关食品和记录，及时报告并配合调查。");
+    if (title.contains(QStringLiteral("仓库")) || title.contains(QStringLiteral("库房")) || title.contains(QStringLiteral("出入库"))) return QStringLiteral(
+        "一、物资入库必须核对名称、规格、数量、质量和凭证，验收合格后方可入账。\n"
+        "二、库内物资分类分区、定置标识，做到帐、卡、物相符，严禁混放和超高堆码。\n"
+        "三、执行先进先出和保质期管理，定期盘点，发现差异及时查明原因并上报。\n"
+        "四、仓库保持通风、干燥、整洁，落实防火、防潮、防盗、防虫和防污染措施。\n"
+        "五、易燃、易爆、危险化学品按性质专区存放，设置警示标识并落实专人管理。\n"
+        "六、物资出库凭有效手续办理，复核品名、规格和数量，未经批准不得擅自领用。\n"
+        "七、消防通道和安全出口保持畅通，库区严禁烟火，电气设备使用后及时关闭。\n"
+        "八、出入库、盘点、报损和异常处置记录应真实完整，按规定保存备查。");
+    if (title.contains(QStringLiteral("岗位职责")) || title.contains(QStringLiteral("职责"))) return QStringLiteral(
+        "一、遵守国家法律法规和单位各项规章制度，服从工作安排，认真履行岗位职责。\n"
+        "二、熟悉本岗位工作流程、质量要求和安全风险，按标准完成各项任务。\n"
+        "三、上岗前检查工作环境、设备、工具和防护用品，发现异常及时报告。\n"
+        "四、严格执行操作规程，不违章指挥、不违章作业，有权制止不安全行为。\n"
+        "五、做好工作记录、交接班和资料保管，确保信息真实、准确、完整。\n"
+        "六、维护现场秩序和环境卫生，做到物品定置、区域整洁、通道畅通。\n"
+        "七、发生突发情况立即采取力所能及的措施并逐级报告，配合应急处置。\n"
+        "八、主动参加培训和考核，持续改进工作质量，完成上级交办的其他任务。");
+    if (title.contains(QStringLiteral("操作规程")) || title.contains(QStringLiteral("设备"))) return QStringLiteral(
+        "一、操作人员须经培训考核合格，熟悉设备性能、风险和应急处置方法后方可上岗。\n"
+        "二、开机前检查电源、防护装置、急停按钮、工具和作业区域，确认正常后启动。\n"
+        "三、按规定穿戴劳动防护用品，严禁佩戴可能卷入设备的饰物，长发应盘入帽内。\n"
+        "四、严格按工艺参数和操作顺序作业，设备运行时不得离岗、拆卸防护或徒手排障。\n"
+        "五、发现异响、异味、振动或温升异常时立即停机断电，悬挂警示标识并报告。\n"
+        "六、清理、调整、维修和更换部件必须执行停机、断电、挂牌等能量隔离措施。\n"
+        "七、作业结束后关闭设备和电源，清理现场，工具归位，填写运行及交接记录。\n"
+        "八、未经许可不得擅自改变设备结构、保护装置、控制程序和工艺参数。");
+    if (title.contains(QStringLiteral("应急"))) return QStringLiteral(
+        "一、坚持统一指挥、快速响应、以人为本、科学处置的原则，最大限度减少损失。\n"
+        "二、明确应急负责人、联络人员、疏散引导、现场警戒、救护和后勤保障职责。\n"
+        "三、发现险情立即报告，说明地点、类型、人员伤亡和现场情况，必要时拨打紧急电话。\n"
+        "四、立即启动相应预案，切断危险能源，划定警戒区域，组织无关人员有序撤离。\n"
+        "五、救援人员应正确佩戴防护用品，在确保自身安全的前提下实施初期处置。\n"
+        "六、保持疏散通道畅通，到达安全区域后清点人数，不得擅自返回危险区域。\n"
+        "七、保护事故现场和相关证据，配合专业救援及调查，不得迟报、漏报、瞒报。\n"
+        "八、事后及时总结评估，补充应急物资，整改暴露问题，并按计划组织培训演练。");
+    if (title.contains(QStringLiteral("质量")) || title.contains(QStringLiteral("检验"))) return QStringLiteral(
+        "一、坚持质量第一、预防为主、全员参与、持续改进，严格执行技术标准和工艺文件。\n"
+        "二、原辅材料入场应按规定检验，未经确认或检验不合格的物料不得投入使用。\n"
+        "三、落实首件确认、过程巡检和成品检验，关键工序实行重点控制并保留记录。\n"
+        "四、作业人员做好自检、互检，不接收、不制造、不流转不合格品。\n"
+        "五、不合格品应及时标识、隔离、评审和处置，严禁与合格品混放或擅自放行。\n"
+        "六、仪器设备按期检定校准，保持状态有效；检验数据必须真实、准确、可追溯。\n"
+        "七、发生质量异常立即停止相关工序，查明原因，制定并验证纠正预防措施。\n"
+        "八、定期分析质量数据和客户反馈，持续改进工艺、管理和产品质量。");
+    return QStringLiteral(
+        "一、严格遵守国家有关法律法规、行业标准和单位各项规章制度。\n"
+        "二、按照职责分工落实责任，明确工作要求、办理流程和完成时限。\n"
+        "三、工作人员应经培训后上岗，熟悉岗位风险、操作要求和应急处置方法。\n"
+        "四、工作前认真检查环境、设施、设备和相关资料，确认符合要求后开展作业。\n"
+        "五、工作中严格执行规定程序，做好沟通、复核和记录，严禁弄虚作假。\n"
+        "六、定期开展检查和隐患排查，发现问题立即整改；不能立即整改的及时上报。\n"
+        "七、发生异常或突发事件时，立即采取有效措施，保护人员安全并按程序报告。\n"
+        "八、各类记录和档案应真实、完整、清晰，按规定保存，持续改进管理工作。");
+}
+
+void prepareBoardItem(QGraphicsItem *item, const QString &kind, const QString &name, QGraphicsScene *scene, qreal z)
+{
+    item->setData(KindRole, kind); item->setData(NameRole, name); item->setData(LayerRole, QStringLiteral("智能展板")); item->setData(VisibleRole, true); item->setZValue(z);
+    item->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable); scene->addItem(item);
+}
+
+void addBoardDesign(QGraphicsScene *scene, const QRectF &page, const QString &title, const QString &body, const QString &footer, const BoardTheme &theme)
+{
+    const qreal shortSide = qMin(page.width(), page.height()); const qreal margin = shortSide * 0.045; const qreal borderWidth = qMax(8.0, shortSide * 0.0045);
+    auto *background = new QGraphicsRectItem(page); background->setPen(Qt::NoPen); background->setBrush(theme.background); prepareBoardItem(background, QStringLiteral("rectangle"), QStringLiteral("展板底色"), scene, -10.0);
+    auto *outer = new QGraphicsRectItem(page.adjusted(margin * 0.48, margin * 0.48, -margin * 0.48, -margin * 0.48)); outer->setBrush(Qt::NoBrush); outer->setPen(QPen(theme.primary, borderWidth)); prepareBoardItem(outer, QStringLiteral("rectangle"), QStringLiteral("外边框"), scene, -5.0);
+    auto *inner = new QGraphicsRectItem(page.adjusted(margin, margin, -margin, -margin)); inner->setBrush(Qt::NoBrush); inner->setPen(QPen(theme.accent, borderWidth * 0.42)); prepareBoardItem(inner, QStringLiteral("rectangle"), QStringLiteral("内边框"), scene, -4.0);
+    const qreal headerHeight = page.height() * 0.125; const QRectF header(page.left() + margin, page.top() + margin, page.width() - margin * 2.0, headerHeight);
+    auto *bar = new QGraphicsRectItem(header); bar->setPen(Qt::NoPen); bar->setBrush(theme.primary); prepareBoardItem(bar, QStringLiteral("rectangle"), QStringLiteral("标题栏"), scene, -2.0);
+    auto *titleItem = new QGraphicsTextItem(title); QFont titleFont(QStringLiteral("Microsoft YaHei")); titleFont.setBold(true); titleFont.setPointSizeF(qMax(32.0, shortSide * (title.size() > 14 ? 0.024 : 0.031))); titleItem->setFont(titleFont); titleItem->setDefaultTextColor(Qt::white); titleItem->setTextWidth(header.width() - margin * 0.8); titleItem->document()->setDocumentMargin(0); QTextOption titleOption = titleItem->document()->defaultTextOption(); titleOption.setAlignment(Qt::AlignHCenter); titleItem->document()->setDefaultTextOption(titleOption); titleItem->setPos(header.left() + margin * 0.4, header.center().y() - titleItem->boundingRect().height() / 2.0); prepareBoardItem(titleItem, QStringLiteral("text"), QStringLiteral("制度标题"), scene, 2.0);
+    const qreal bodyTop = header.bottom() + margin * 0.75; const qreal footerHeight = qMax(100.0, page.height() * 0.055); const qreal bodyHeight = page.bottom() - margin * 1.8 - footerHeight - bodyTop;
+    auto *bodyItem = new QGraphicsTextItem(body); QFont bodyFont(QStringLiteral("Microsoft YaHei")); bodyFont.setPointSizeF(qMax(18.0, shortSide * 0.0175)); bodyItem->setFont(bodyFont); bodyItem->setDefaultTextColor(QColor("#20252A")); bodyItem->setTextWidth(page.width() - margin * 3.0); bodyItem->document()->setDocumentMargin(0); QTextOption bodyOption = bodyItem->document()->defaultTextOption(); bodyOption.setAlignment(Qt::AlignJustify); bodyOption.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere); bodyItem->document()->setDefaultTextOption(bodyOption); bodyItem->setPos(page.left() + margin * 1.5, bodyTop); bodyItem->setData(TextBoxHeightRole, bodyHeight); bodyItem->setData(ParagraphRole, true);
+    while (bodyItem->boundingRect().height() > bodyHeight && bodyFont.pointSizeF() > 14.0) { bodyFont.setPointSizeF(bodyFont.pointSizeF() - 1.0); bodyItem->setFont(bodyFont); }
+    prepareBoardItem(bodyItem, QStringLiteral("text"), QStringLiteral("制度正文"), scene, 1.0);
+    if (!footer.trimmed().isEmpty()) {
+        auto *footerItem = new QGraphicsTextItem(footer.trimmed()); QFont footerFont(QStringLiteral("Microsoft YaHei")); footerFont.setBold(true); footerFont.setPointSizeF(qMax(16.0, shortSide * 0.014)); footerItem->setFont(footerFont); footerItem->setDefaultTextColor(theme.primary); footerItem->setTextWidth(page.width() - margin * 3.0); footerItem->document()->setDocumentMargin(0); QTextOption option = footerItem->document()->defaultTextOption(); option.setAlignment(Qt::AlignRight); footerItem->document()->setDefaultTextOption(option); footerItem->setPos(page.left() + margin * 1.5, page.bottom() - margin * 1.25 - footerItem->boundingRect().height()); prepareBoardItem(footerItem, QStringLiteral("text"), QStringLiteral("落款"), scene, 1.0);
+    }
+}
 }
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
@@ -254,6 +399,8 @@ void MainWindow::buildMenus()
     objectMenu->addAction(QStringLiteral("逆时针旋转90°"), this, [this] { transformSelection(3); });
 
     auto *layoutMenu = menuBar()->addMenu(QStringLiteral("布局(&L)"));
+    layoutMenu->addAction(QStringLiteral("页面尺寸设置…"), this, &MainWindow::pageSetup);
+    layoutMenu->addSeparator();
     layoutMenu->addAction(QStringLiteral("左对齐"), this, [this] { alignSelection(Qt::AlignLeft); });
     layoutMenu->addAction(QStringLiteral("水平居中"), this, [this] { alignSelection(Qt::AlignHCenter); });
     layoutMenu->addAction(QStringLiteral("右对齐"), this, [this] { alignSelection(Qt::AlignRight); });
@@ -269,6 +416,10 @@ void MainWindow::buildMenus()
     prepressMenu->addAction(QStringLiteral("出血与裁切线设置…"), this, &MainWindow::configurePrintSettings);
     prepressMenu->addAction(QStringLiteral("印前预检"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P), this, &MainWindow::preflightDocument);
     prepressMenu->addAction(QStringLiteral("导出印刷PDF…"), this, &MainWindow::exportPrintPdf);
+
+    auto *smartMenu = menuBar()->addMenu(QStringLiteral("智能展板(&I)"));
+    smartMenu->addAction(QStringLiteral("输入制度名称自动生成…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N), this, &MainWindow::generateSmartBoard);
+    smartMenu->addAction(QStringLiteral("批量生成独立制度牌…"), this, &MainWindow::batchGenerateBoards);
 
     auto *effectsMenu = menuBar()->addMenu(QStringLiteral("效果(&C)"));
     effectsMenu->addAction(QStringLiteral("线性渐变填充"), this, [this] { m_fillModeCombo->setCurrentIndex(1); applyInspector(); });
@@ -297,7 +448,7 @@ void MainWindow::buildMenus()
     textMenu->addAction(QStringLiteral("文本框自动缩字"), this, &MainWindow::autoFitSelectedText);
     auto *helpMenu = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
     helpMenu->addAction(QStringLiteral("关于匠心矢量设计"), this, [this] {
-        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.4 Native\n第五阶段：SVG导入、JPG/TIFF、批量导出、出血裁切线、印刷PDF与印前预检。\n不包含任何CorelDRAW专有代码或文件规范。"));
+        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.5 Native\n第六阶段：制度名称智能成稿、行业版式、本地内容、专业尺寸和最多20张批量生成。\n不包含任何CorelDRAW专有代码或文件规范。"));
     });
 }
 
@@ -427,12 +578,12 @@ void MainWindow::buildDockers()
     auto *productionDock = new QDockWidget(QStringLiteral("生产与导出"), this); auto *panel = new QWidget; auto *layout = new QVBoxLayout(panel);
     auto *newButton = new QPushButton(QStringLiteral("新建设计")); auto *saveButton = new QPushButton(QStringLiteral("保存工程文件 .jxv"));
     auto *svgButton = new QPushButton(QStringLiteral("导出 SVG 矢量图")); auto *pdfButton = new QPushButton(QStringLiteral("导出普通 PDF")); auto *pngButton = new QPushButton(QStringLiteral("导出 PNG 高清图"));
-    auto *printButton = new QPushButton(QStringLiteral("印前预检并导出印刷 PDF")); auto *batchButton = new QPushButton(QStringLiteral("批量导出 JXV 文件"));
+    auto *smartButton = new QPushButton(QStringLiteral("智能生成制度展板")); auto *printButton = new QPushButton(QStringLiteral("印前预检并导出印刷 PDF")); auto *batchButton = new QPushButton(QStringLiteral("批量生成独立制度牌"));
     layout->addWidget(new QLabel(QStringLiteral("自主文档格式：JXV\n交付格式：SVG / PDF / PNG / JPG / TIFF\n印刷输出：300dpi、出血与裁切线。")));
-    layout->addWidget(newButton); layout->addWidget(saveButton); layout->addWidget(svgButton); layout->addWidget(pdfButton); layout->addWidget(pngButton); layout->addWidget(printButton); layout->addWidget(batchButton); layout->addStretch();
+    layout->addWidget(smartButton); layout->addWidget(newButton); layout->addWidget(saveButton); layout->addWidget(svgButton); layout->addWidget(pdfButton); layout->addWidget(pngButton); layout->addWidget(printButton); layout->addWidget(batchButton); layout->addStretch();
     connect(newButton, &QPushButton::clicked, this, &MainWindow::newDocument); connect(saveButton, &QPushButton::clicked, this, [this] { saveDocument(false); });
     connect(svgButton, &QPushButton::clicked, this, &MainWindow::exportSvg); connect(pdfButton, &QPushButton::clicked, this, &MainWindow::exportPdf); connect(pngButton, &QPushButton::clicked, this, &MainWindow::exportPng);
-    connect(printButton, &QPushButton::clicked, this, [this] { preflightDocument(); exportPrintPdf(); }); connect(batchButton, &QPushButton::clicked, this, &MainWindow::batchExport);
+    connect(smartButton, &QPushButton::clicked, this, &MainWindow::generateSmartBoard); connect(printButton, &QPushButton::clicked, this, [this] { preflightDocument(); exportPrintPdf(); }); connect(batchButton, &QPushButton::clicked, this, &MainWindow::batchGenerateBoards);
     productionDock->setWidget(panel); addDockWidget(Qt::RightDockWidgetArea, productionDock); tabifyDockWidget(objectsDock, productionDock); objectsDock->raise();
 }
 
@@ -553,6 +704,67 @@ void MainWindow::openDocument()
     m_canvas->setPageRect(page); m_fileName = fileName; m_modified = false; m_history.clear(); m_historyIndex = -1; recordHistory(QStringLiteral("打开文档")); m_canvas->zoomToFit(); applyLayerState(); updateWindowTitle();
 }
 
+void MainWindow::pageSetup()
+{
+    QStringList choices = boardSizeLabels(); choices.append(QStringLiteral("自定义尺寸")); bool ok = false;
+    const QString choice = QInputDialog::getItem(this, QStringLiteral("页面尺寸"), QStringLiteral("选择成品尺寸"), choices, 0, false, &ok); if (!ok) return;
+    QSizeF millimeters;
+    if (choice == QStringLiteral("自定义尺寸")) {
+        const qreal width = QInputDialog::getDouble(this, QStringLiteral("自定义尺寸"), QStringLiteral("宽度（毫米）"), m_canvas->pageRect().width() / 10.0, 20.0, 3000.0, 1, &ok); if (!ok) return;
+        const qreal height = QInputDialog::getDouble(this, QStringLiteral("自定义尺寸"), QStringLiteral("高度（毫米）"), m_canvas->pageRect().height() / 10.0, 20.0, 3000.0, 1, &ok); if (!ok) return; millimeters = {width, height};
+    } else millimeters = boardSizeMillimeters(choice);
+    const QPointF topLeft = m_canvas->pageRect().topLeft(); m_canvas->setPageRect(QRectF(topLeft, millimeters * 10.0)); m_canvas->zoomToFit();
+    markModified(QStringLiteral("页面尺寸已设置为 %1×%2 mm").arg(millimeters.width()).arg(millimeters.height()));
+}
+
+void MainWindow::generateSmartBoard()
+{
+    QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("智能生成制度展板")); dialog.resize(620, 560); QFormLayout layout(&dialog);
+    auto *titleEdit = new QLineEdit; titleEdit->setPlaceholderText(QStringLiteral("例如：消防安全管理制度"));
+    auto *bodyEdit = new QPlainTextEdit; bodyEdit->setPlaceholderText(QStringLiteral("正文可留空，由本地规则根据制度名称生成；也可以粘贴自己的正文。"));
+    auto *footerEdit = new QLineEdit; footerEdit->setPlaceholderText(QStringLiteral("公司名称或落款（可留空）"));
+    auto *themeCombo = new QComboBox; for (const BoardTheme &theme : boardThemes()) themeCombo->addItem(theme.name);
+    auto *sizeCombo = new QComboBox; sizeCombo->addItems(boardSizeLabels());
+    auto *localContent = new QCheckBox(QStringLiteral("正文为空时，根据标题生成本地制度草稿")); localContent->setChecked(true);
+    auto *notice = new QLabel(QStringLiteral("提示：自动内容是排版草稿，涉及法规、医疗、消防、食品和安全生产时必须由专业人员审核。")); notice->setWordWrap(true); notice->setStyleSheet(QStringLiteral("color:#a34721;padding:6px;background:#fff5e9;"));
+    layout.addRow(QStringLiteral("制度名称"), titleEdit); layout.addRow(QStringLiteral("正文内容"), bodyEdit); layout.addRow(QStringLiteral("落款"), footerEdit); layout.addRow(QStringLiteral("行业版式"), themeCombo); layout.addRow(QStringLiteral("成品尺寸"), sizeCombo); layout.addRow(localContent); layout.addRow(notice);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("生成展板")); buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消")); layout.addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return; const QString title = titleEdit->text().trimmed(); if (title.isEmpty()) { QMessageBox::warning(this, QStringLiteral("缺少名称"), QStringLiteral("请输入制度名称")); return; }
+    QString body = bodyEdit->toPlainText().trimmed(); if (body.isEmpty() && localContent->isChecked()) body = policyBodyForTitle(title); if (body.isEmpty()) { QMessageBox::warning(this, QStringLiteral("缺少正文"), QStringLiteral("请输入正文，或启用本地内容生成")); return; }
+    if (!maybeSave()) return; const QList<BoardTheme> themes = boardThemes(); const QSizeF sizeMm = boardSizeMillimeters(sizeCombo->currentText()); const QRectF page(100, 100, sizeMm.width() * 10.0, sizeMm.height() * 10.0);
+    m_restoring = true; m_canvas->scene()->clear(); m_canvas->setPageRect(page); m_fileName.clear(); m_history.clear(); m_historyIndex = -1; m_currentLayer = QStringLiteral("智能展板"); m_canvas->setActiveLayer(m_currentLayer);
+    addBoardDesign(m_canvas->scene(), page, title, body, footerEdit->text(), themes.value(themeCombo->currentIndex(), themes.first()));
+    m_restoring = false; m_modified = true; recordHistory(QStringLiteral("智能生成制度展板")); m_canvas->zoomToFit(); updateObjectList(); updateWindowTitle(); setStatus(QStringLiteral("制度展板已自动生成：") + title);
+}
+
+void MainWindow::batchGenerateBoards()
+{
+    QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("批量生成独立制度牌")); dialog.resize(620, 520); QFormLayout layout(&dialog);
+    auto *titlesEdit = new QPlainTextEdit; titlesEdit->setPlaceholderText(QStringLiteral("每行一个制度名称，最多20个\n例如：\n安全生产管理制度\n消防安全管理制度\n仓库管理制度"));
+    auto *footerEdit = new QLineEdit; footerEdit->setPlaceholderText(QStringLiteral("统一公司名称或落款（可留空）"));
+    auto *themeCombo = new QComboBox; for (const BoardTheme &theme : boardThemes()) themeCombo->addItem(theme.name);
+    auto *sizeCombo = new QComboBox; sizeCombo->addItems(boardSizeLabels());
+    auto *outputCombo = new QComboBox; outputCombo->addItems({QStringLiteral("JXV工程 + PDF印刷文件（推荐）"), QStringLiteral("JXV + PDF + PNG 300dpi"), QStringLiteral("仅JXV工程")});
+    auto *notice = new QLabel(QStringLiteral("每个名称会生成独立文件，并自动匹配消防、食品、仓库、职责、设备、应急、质量等本地内容规则。自动草稿必须人工审核。")); notice->setWordWrap(true);
+    layout.addRow(QStringLiteral("制度名称"), titlesEdit); layout.addRow(QStringLiteral("统一落款"), footerEdit); layout.addRow(QStringLiteral("行业版式"), themeCombo); layout.addRow(QStringLiteral("成品尺寸"), sizeCombo); layout.addRow(QStringLiteral("输出文件"), outputCombo); layout.addRow(notice);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("选择文件夹并生成")); buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消")); layout.addRow(buttons); connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return; QStringList titles; for (const QString &line : titlesEdit->toPlainText().split('\n', Qt::SkipEmptyParts)) if (!line.trimmed().isEmpty()) titles.append(line.trimmed());
+    if (titles.isEmpty()) { QMessageBox::warning(this, QStringLiteral("缺少名称"), QStringLiteral("请至少输入一个制度名称")); return; } if (titles.size() > 20) titles = titles.mid(0, 20);
+    const QString directory = QFileDialog::getExistingDirectory(this, QStringLiteral("选择批量生成文件夹")); if (directory.isEmpty()) return;
+    const QList<BoardTheme> themes = boardThemes(); const BoardTheme theme = themes.value(themeCombo->currentIndex(), themes.first()); const QSizeF sizeMm = boardSizeMillimeters(sizeCombo->currentText()); const QRectF page(0, 0, sizeMm.width() * 10.0, sizeMm.height() * 10.0); const bool makePdf = outputCombo->currentIndex() < 2; const bool makePng = outputCombo->currentIndex() == 1;
+    QProgressDialog progress(QStringLiteral("正在生成独立制度牌…"), QStringLiteral("取消"), 0, titles.size(), this); progress.setWindowModality(Qt::WindowModal); int succeeded = 0; QStringList failures;
+    for (int index = 0; index < titles.size(); ++index) {
+        progress.setValue(index); progress.setLabelText(titles[index]); if (progress.wasCanceled()) break; QGraphicsScene scene; addBoardDesign(&scene, page, titles[index], policyBodyForTitle(titles[index]), footerEdit->text(), theme);
+        QString safeName = titles[index]; safeName.replace(QRegularExpression(QStringLiteral("[<>:\"/\\\\|?*]")), QStringLiteral("_")); safeName = safeName.left(80); const QString base = QDir(directory).filePath(QStringLiteral("%1-%2").arg(index + 1, 2, 10, QLatin1Char('0')).arg(safeName)); QString error;
+        bool saved = DocumentIO::saveFile(base + QStringLiteral(".jxv"), DocumentIO::serializeDocument(&scene, page), &error);
+        if (saved && makePdf) { QPdfWriter writer(base + QStringLiteral(".pdf")); writer.setResolution(300); writer.setPageSize(QPageSize(sizeMm, QPageSize::Millimeter, QStringLiteral("制度展板"), QPageSize::ExactMatch)); writer.setPageMargins(QMarginsF(), QPageLayout::Millimeter); QPainter painter(&writer); scene.render(&painter, QRectF(0, 0, writer.width(), writer.height()), page, Qt::IgnoreAspectRatio); painter.end(); }
+        if (saved && makePng) { const qreal scale = 300.0 / 254.0; const QSize pixels = (page.size() * scale).toSize(); QImage image(pixels, QImage::Format_ARGB32_Premultiplied); if (image.isNull()) saved = false; else { image.fill(Qt::white); image.setDotsPerMeterX(11811); image.setDotsPerMeterY(11811); QPainter painter(&image); painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing | QPainter::SmoothPixmapTransform); scene.render(&painter, QRectF(QPointF(), pixels), page, Qt::IgnoreAspectRatio); painter.end(); saved = image.save(base + QStringLiteral(".png"), "PNG"); } }
+        if (saved) ++succeeded; else failures.append(titles[index] + QStringLiteral("：") + (error.isEmpty() ? QStringLiteral("输出失败") : error));
+    }
+    progress.setValue(titles.size()); QString result = QStringLiteral("已生成 %1/%2 张独立制度牌。\n输出文件夹：%3\n\n自动生成内容属于排版草稿，上墙或交付前请逐张审核。").arg(succeeded).arg(titles.size()).arg(QDir::toNativeSeparators(directory)); if (!failures.isEmpty()) result += QStringLiteral("\n\n失败：\n") + failures.join('\n'); QMessageBox::information(this, QStringLiteral("批量生成完成"), result); setStatus(QStringLiteral("批量生成完成：%1张").arg(succeeded));
+}
+
 void MainWindow::importSvg()
 {
     const QString fileName = QFileDialog::getOpenFileName(this, QStringLiteral("导入SVG矢量图"), {}, QStringLiteral("SVG矢量图 (*.svg)"));
@@ -627,7 +839,7 @@ void MainWindow::exportImage(const QString &format)
 {
     const QString extension = format.toLower(); const QString filter = QStringLiteral("%1高清图 (*.%2)").arg(format, extension);
     QString fileName = QFileDialog::getSaveFileName(this, QStringLiteral("导出") + format, QStringLiteral("设计.") + extension, filter); if (fileName.isEmpty()) return; if (!fileName.endsWith("." + extension, Qt::CaseInsensitive)) fileName += "." + extension;
-    const QSize size = (m_canvas->pageRect().size() * 3.0).toSize(); QImage image(size, QImage::Format_ARGB32_Premultiplied); image.fill(Qt::white); image.setDotsPerMeterX(11811); image.setDotsPerMeterY(11811);
+    const qreal scale = 300.0 / 254.0; const QSize size = (m_canvas->pageRect().size() * scale).toSize(); QImage image(size, QImage::Format_ARGB32_Premultiplied); image.fill(Qt::white); image.setDotsPerMeterX(11811); image.setDotsPerMeterY(11811);
     QPainter painter(&image); painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing | QPainter::SmoothPixmapTransform); renderForExport(&painter, QRectF(QPointF(), size)); painter.end();
     if (!image.save(fileName, format.toLatin1().constData(), format == QStringLiteral("JPG") ? 95 : -1)) QMessageBox::critical(this, QStringLiteral("导出失败"), QStringLiteral("无法写入") + format + QStringLiteral("文件")); else setStatus(QStringLiteral("300dpi ") + format + QStringLiteral("导出完成"));
 }
@@ -695,7 +907,7 @@ void MainWindow::batchExport()
             QPdfWriter writer(base + QStringLiteral(".pdf")); writer.setResolution(300); writer.setPageSize(QPageSize(page.size() / 10.0, QPageSize::Millimeter, QStringLiteral("自定义页面"), QPageSize::ExactMatch)); writer.setPageMargins(QMarginsF(), QPageLayout::Millimeter);
             QPainter painter(&writer); scene.render(&painter, QRectF(0, 0, writer.width(), writer.height()), page, Qt::IgnoreAspectRatio); painter.end();
         } else {
-            const QSize size = (page.size() * 3.0).toSize(); QImage image(size, QImage::Format_ARGB32_Premultiplied); image.fill(Qt::white); image.setDotsPerMeterX(11811); image.setDotsPerMeterY(11811);
+            const qreal scale = 300.0 / 254.0; const QSize size = (page.size() * scale).toSize(); QImage image(size, QImage::Format_ARGB32_Premultiplied); image.fill(Qt::white); image.setDotsPerMeterX(11811); image.setDotsPerMeterY(11811);
             QPainter painter(&image); painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing | QPainter::SmoothPixmapTransform); scene.render(&painter, QRectF(QPointF(), size), page, Qt::IgnoreAspectRatio); painter.end();
             saved = image.save(base + QStringLiteral(".") + format.toLower(), format.toLatin1().constData(), format == QStringLiteral("JPG") ? 95 : -1);
         }
@@ -1187,7 +1399,7 @@ void MainWindow::chooseSecondFillColor()
 
 void MainWindow::updateWindowTitle()
 {
-    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.4 Native").arg(m_modified ? "*" : "", name));
+    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.5 Native").arg(m_modified ? "*" : "", name));
 }
 
 void MainWindow::setStatus(const QString &message) { if (m_statusLabel) m_statusLabel->setText(message); }

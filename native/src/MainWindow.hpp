@@ -51,6 +51,9 @@ private:
     bool saveDocument(bool saveAs);
     void newDocument();
     void openDocument();
+    void pageSetup();
+    void generateSmartBoard();
+    void batchGenerateBoards();
     void importSvg();
     void exportSvg();
     void exportPdf();
