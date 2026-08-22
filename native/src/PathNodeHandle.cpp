@@ -1,6 +1,7 @@
 #include "PathNodeHandle.hpp"
 
 #include <QBrush>
+#include <QCursor>
 #include <QGraphicsPathItem>
 #include <QPainterPath>
 #include <QPen>
