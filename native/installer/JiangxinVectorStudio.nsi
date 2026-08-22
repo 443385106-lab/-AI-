@@ -2,7 +2,7 @@ Unicode true
 !include "MUI2.nsh"
 
 !ifndef OUTFILE
-  !define OUTFILE "..\dist\JiangxinVectorStudio-1.7.0-Setup.exe"
+  !define OUTFILE "..\dist\JiangxinVectorStudio-1.8.0-Setup.exe"
 !endif
 
 Name "匠心矢量设计"
@@ -14,11 +14,11 @@ SetCompressor /SOLID lzma
 Icon "..\..\assets\app-icon.ico"
 UninstallIcon "..\..\assets\app-icon.ico"
 
-VIProductVersion "1.7.0.0"
+VIProductVersion "1.8.0.0"
 VIAddVersionKey /LANG=2052 "ProductName" "匠心矢量设计"
 VIAddVersionKey /LANG=2052 "CompanyName" "匠心图文"
 VIAddVersionKey /LANG=2052 "FileDescription" "国产原生矢量设计软件"
-VIAddVersionKey /LANG=2052 "FileVersion" "1.7.0"
+VIAddVersionKey /LANG=2052 "FileVersion" "1.8.0"
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "..\..\assets\app-icon.ico"
@@ -45,7 +45,7 @@ Section "主程序" SecMain
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\JiangxinVectorStudio" "DisplayName" "匠心矢量设计"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\JiangxinVectorStudio" "UninstallString" "$INSTDIR\Uninstall.exe"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\JiangxinVectorStudio" "Publisher" "匠心图文"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\JiangxinVectorStudio" "DisplayVersion" "1.7.0"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\JiangxinVectorStudio" "DisplayVersion" "1.8.0"
 SectionEnd
 
 Section "Uninstall"
