@@ -56,6 +56,7 @@
 #include <QProcess>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QSet>
 #include <QStandardPaths>
 #include <QTemporaryFile>
@@ -284,6 +285,131 @@ void prepareBoardItem(QGraphicsItem *item, const QString &kind, const QString &n
 {
     item->setData(KindRole, kind); item->setData(NameRole, name); item->setData(LayerRole, QStringLiteral("智能展板")); item->setData(VisibleRole, true); item->setZValue(z);
     item->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable); scene->addItem(item);
+}
+
+struct BrandProfile {
+    QString company;
+    QString logoPath;
+    QColor primary {QStringLiteral("#145DA0")};
+    QColor accent {QStringLiteral("#6CB4D8")};
+    int logoPosition = 0;
+    qreal logoSizePercent = 10.0;
+    bool configured = false;
+
+    bool isEmpty() const { return !configured; }
+};
+
+BrandProfile loadBrandProfile()
+{
+    QSettings settings;
+    BrandProfile profile;
+    profile.configured = settings.contains(QStringLiteral("brand/configured"));
+    profile.company = settings.value(QStringLiteral("brand/company")).toString();
+    profile.logoPath = settings.value(QStringLiteral("brand/logoPath")).toString();
+    profile.primary = QColor(settings.value(QStringLiteral("brand/primary"), QStringLiteral("#145DA0")).toString());
+    profile.accent = QColor(settings.value(QStringLiteral("brand/accent"), QStringLiteral("#6CB4D8")).toString());
+    profile.logoPosition = settings.value(QStringLiteral("brand/logoPosition"), 0).toInt();
+    profile.logoSizePercent = settings.value(QStringLiteral("brand/logoSizePercent"), 10.0).toDouble();
+    if (!profile.primary.isValid()) profile.primary = QColor(QStringLiteral("#145DA0"));
+    if (!profile.accent.isValid()) profile.accent = QColor(QStringLiteral("#6CB4D8"));
+    return profile;
+}
+
+void saveBrandProfile(const BrandProfile &profile)
+{
+    QSettings settings;
+    settings.setValue(QStringLiteral("brand/configured"), true);
+    settings.setValue(QStringLiteral("brand/company"), profile.company);
+    settings.setValue(QStringLiteral("brand/logoPath"), profile.logoPath);
+    settings.setValue(QStringLiteral("brand/primary"), profile.primary.name());
+    settings.setValue(QStringLiteral("brand/accent"), profile.accent.name());
+    settings.setValue(QStringLiteral("brand/logoPosition"), profile.logoPosition);
+    settings.setValue(QStringLiteral("brand/logoSizePercent"), profile.logoSizePercent);
+    settings.sync();
+}
+
+void setBrandItemMetadata(QGraphicsItem *item, const QString &kind, const QString &name)
+{
+    item->setData(KindRole, kind); item->setData(NameRole, name); item->setData(LayerRole, QStringLiteral("品牌资产")); item->setData(VisibleRole, true);
+    item->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable);
+}
+
+int applyBrandToScene(QGraphicsScene *scene, const QRectF &page, const BrandProfile &profile, QString *logoError = nullptr)
+{
+    int changed = 0;
+    bool hasFooter = false;
+    const QList<QGraphicsItem *> items = scene->items();
+    for (QGraphicsItem *item : items) {
+        const QString name = item->data(NameRole).toString();
+        if (name == QStringLiteral("品牌LOGO") || name == QStringLiteral("LOGO占位框") || name == QStringLiteral("LOGO占位文字")) {
+            if (!item->parentItem()) { scene->removeItem(item); delete item; ++changed; }
+            continue;
+        }
+        if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) {
+            if (name.contains(QStringLiteral("落款"))) {
+                hasFooter = true;
+                if (!profile.company.trimmed().isEmpty()) text->setPlainText(profile.company.trimmed());
+                text->setDefaultTextColor(profile.primary); ++changed;
+            }
+        }
+        if (auto *shape = dynamic_cast<QAbstractGraphicsShapeItem *>(item)) {
+            if (name.contains(QStringLiteral("标题栏")) || name.contains(QStringLiteral("标题区"))) {
+                shape->setBrush(profile.primary); ++changed;
+            }
+            if (name.contains(QStringLiteral("外边框"))) {
+                QPen pen = shape->pen(); pen.setColor(profile.primary); shape->setPen(pen); ++changed;
+            } else if (name.contains(QStringLiteral("内边框"))) {
+                QPen pen = shape->pen(); pen.setColor(profile.accent); shape->setPen(pen); ++changed;
+            }
+        }
+        if (auto *line = dynamic_cast<QGraphicsLineItem *>(item)) {
+            if (name.contains(QStringLiteral("分栏线")) || name.contains(QStringLiteral("表格"))) {
+                QPen pen = line->pen(); pen.setColor(profile.accent); line->setPen(pen); ++changed;
+            }
+        }
+    }
+
+    const qreal shortSide = qMax(1.0, qMin(page.width(), page.height()));
+    const qreal margin = shortSide * 0.045;
+    if (!hasFooter && !profile.company.trimmed().isEmpty()) {
+        auto *footer = new QGraphicsTextItem(profile.company.trimmed());
+        QFont font(QStringLiteral("Microsoft YaHei")); font.setBold(true); font.setPointSizeF(qMax(15.0, shortSide * 0.014)); footer->setFont(font); footer->setDefaultTextColor(profile.primary);
+        footer->setTextWidth(page.width() - margin * 3.0); footer->document()->setDocumentMargin(0); QTextOption option = footer->document()->defaultTextOption(); option.setAlignment(Qt::AlignRight); footer->document()->setDefaultTextOption(option);
+        footer->setPos(page.left() + margin * 1.5, page.bottom() - margin * 1.25 - footer->boundingRect().height()); footer->setZValue(8.0); setBrandItemMetadata(footer, QStringLiteral("text"), QStringLiteral("品牌落款")); scene->addItem(footer); ++changed;
+    }
+
+    const QString logoPath = profile.logoPath.trimmed();
+    if (!logoPath.isEmpty()) {
+        QGraphicsItem *logo = nullptr;
+        const bool isSvg = QFileInfo(logoPath).suffix().compare(QStringLiteral("svg"), Qt::CaseInsensitive) == 0;
+        if (isSvg) {
+            QFile file(logoPath);
+            if (file.open(QIODevice::ReadOnly)) {
+                const QByteArray data = file.readAll(); auto *svg = new QGraphicsSvgItem; auto *renderer = new QSvgRenderer(data, svg);
+                if (renderer->isValid()) { svg->setSharedRenderer(renderer); svg->setData(SvgDataRole, data); logo = svg; setBrandItemMetadata(svg, QStringLiteral("svg"), QStringLiteral("品牌LOGO")); }
+                else delete svg;
+            }
+        } else {
+            const QPixmap pixmap(logoPath);
+            if (!pixmap.isNull()) { auto *bitmap = new QGraphicsPixmapItem(pixmap); logo = bitmap; setBrandItemMetadata(bitmap, QStringLiteral("bitmap"), QStringLiteral("品牌LOGO")); }
+        }
+        if (logo) {
+            scene->addItem(logo); logo->setZValue(10.0);
+            const QRectF bounds = logo->boundingRect(); const qreal target = shortSide * qBound(4.0, profile.logoSizePercent, 25.0) / 100.0;
+            const qreal scale = target / qMax(1.0, qMax(bounds.width(), bounds.height())); logo->setScale(scale);
+            const QSizeF size(bounds.width() * scale, bounds.height() * scale); QPointF position;
+            switch (qBound(0, profile.logoPosition, 3)) {
+            case 1: position = QPointF(page.right() - margin - size.width(), page.top() + margin); break;
+            case 2: position = QPointF(page.left() + margin, page.bottom() - margin - size.height()); break;
+            case 3: position = QPointF(page.right() - margin - size.width(), page.bottom() - margin - size.height()); break;
+            default: position = QPointF(page.left() + margin, page.top() + margin); break;
+            }
+            logo->setPos(position - bounds.topLeft() * scale); ++changed;
+        } else if (logoError) {
+            *logoError = QStringLiteral("无法读取LOGO：%1").arg(logoPath);
+        }
+    }
+    return changed;
 }
 
 void addBoardDesign(QGraphicsScene *scene, const QRectF &page, const QString &title, const QString &body, const QString &footer, const BoardTheme &theme, qreal headerRatio = 0.125, qreal marginRatio = 0.045)
@@ -673,6 +799,13 @@ void MainWindow::buildMenus()
     templateMenu->addAction(QStringLiteral("打开本地模板库…"), this, &MainWindow::openTemplateLibrary);
     templateMenu->addAction(QStringLiteral("将当前设计保存为模板…"), this, &MainWindow::saveCurrentAsTemplate);
 
+    auto *brandMenu = menuBar()->addMenu(QStringLiteral("品牌(&R)"));
+    brandMenu->addAction(QStringLiteral("配置品牌资料…"), this, &MainWindow::configureBrandProfile);
+    brandMenu->addAction(QStringLiteral("应用到当前设计"), this, &MainWindow::applyBrandProfile);
+    brandMenu->addAction(QStringLiteral("批量套用到JXV工程…"), this, &MainWindow::batchApplyBrandProfile);
+    brandMenu->addSeparator();
+    brandMenu->addAction(QStringLiteral("全局查找替换文字…"), QKeySequence(Qt::CTRL | Qt::Key_H), this, &MainWindow::findReplaceDocumentText);
+
     auto *effectsMenu = menuBar()->addMenu(QStringLiteral("效果(&C)"));
     effectsMenu->addAction(QStringLiteral("线性渐变填充"), this, [this] { m_fillModeCombo->setCurrentIndex(1); applyInspector(); });
     effectsMenu->addAction(QStringLiteral("径向渐变填充"), this, [this] { m_fillModeCombo->setCurrentIndex(2); applyInspector(); });
@@ -701,7 +834,7 @@ void MainWindow::buildMenus()
     textMenu->addAction(QStringLiteral("文本框自动缩字"), this, &MainWindow::autoFitSelectedText);
     auto *helpMenu = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
     helpMenu->addAction(QStringLiteral("关于匠心矢量设计"), this, [this] {
-        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.8 Native\n第九阶段：表格线识别、单元格重建、多栏判断、阅读顺序整理和智能结构排版。\n不包含任何CorelDRAW专有代码或文件规范。"));
+        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.9 Native\n第十阶段：品牌资料、LOGO与品牌色一键套用、全局文字替换及批量工程套版。\n不包含任何CorelDRAW专有代码或文件规范。"));
     });
 }
 
@@ -831,12 +964,12 @@ void MainWindow::buildDockers()
     auto *productionDock = new QDockWidget(QStringLiteral("生产与导出"), this); auto *panel = new QWidget; auto *layout = new QVBoxLayout(panel);
     auto *newButton = new QPushButton(QStringLiteral("新建设计")); auto *saveButton = new QPushButton(QStringLiteral("保存工程文件 .jxv"));
     auto *svgButton = new QPushButton(QStringLiteral("导出 SVG 矢量图")); auto *pdfButton = new QPushButton(QStringLiteral("导出普通 PDF")); auto *pngButton = new QPushButton(QStringLiteral("导出 PNG 高清图"));
-    auto *smartButton = new QPushButton(QStringLiteral("智能生成制度展板")); auto *sampleButton = new QPushButton(QStringLiteral("上传样图仿制版式")); auto *ocrButton = new QPushButton(QStringLiteral("OCR表格/多栏智能重建")); auto *templateButton = new QPushButton(QStringLiteral("本地模板库")); auto *printButton = new QPushButton(QStringLiteral("印前预检并导出印刷 PDF")); auto *batchButton = new QPushButton(QStringLiteral("批量生成独立制度牌"));
+    auto *smartButton = new QPushButton(QStringLiteral("智能生成制度展板")); auto *sampleButton = new QPushButton(QStringLiteral("上传样图仿制版式")); auto *ocrButton = new QPushButton(QStringLiteral("OCR表格/多栏智能重建")); auto *templateButton = new QPushButton(QStringLiteral("本地模板库")); auto *brandButton = new QPushButton(QStringLiteral("一键应用公司品牌")); auto *printButton = new QPushButton(QStringLiteral("印前预检并导出印刷 PDF")); auto *batchButton = new QPushButton(QStringLiteral("批量生成独立制度牌"));
     layout->addWidget(new QLabel(QStringLiteral("自主文档格式：JXV\n交付格式：SVG / PDF / PNG / JPG / TIFF\n印刷输出：300dpi、出血与裁切线。")));
-    layout->addWidget(smartButton); layout->addWidget(sampleButton); layout->addWidget(ocrButton); layout->addWidget(templateButton); layout->addWidget(newButton); layout->addWidget(saveButton); layout->addWidget(svgButton); layout->addWidget(pdfButton); layout->addWidget(pngButton); layout->addWidget(printButton); layout->addWidget(batchButton); layout->addStretch();
+    layout->addWidget(smartButton); layout->addWidget(sampleButton); layout->addWidget(ocrButton); layout->addWidget(templateButton); layout->addWidget(brandButton); layout->addWidget(newButton); layout->addWidget(saveButton); layout->addWidget(svgButton); layout->addWidget(pdfButton); layout->addWidget(pngButton); layout->addWidget(printButton); layout->addWidget(batchButton); layout->addStretch();
     connect(newButton, &QPushButton::clicked, this, &MainWindow::newDocument); connect(saveButton, &QPushButton::clicked, this, [this] { saveDocument(false); });
     connect(svgButton, &QPushButton::clicked, this, &MainWindow::exportSvg); connect(pdfButton, &QPushButton::clicked, this, &MainWindow::exportPdf); connect(pngButton, &QPushButton::clicked, this, &MainWindow::exportPng);
-    connect(smartButton, &QPushButton::clicked, this, &MainWindow::generateSmartBoard); connect(sampleButton, &QPushButton::clicked, this, &MainWindow::analyzeSampleLayout); connect(ocrButton, &QPushButton::clicked, this, &MainWindow::ocrSampleImage); connect(templateButton, &QPushButton::clicked, this, &MainWindow::openTemplateLibrary); connect(printButton, &QPushButton::clicked, this, [this] { preflightDocument(); exportPrintPdf(); }); connect(batchButton, &QPushButton::clicked, this, &MainWindow::batchGenerateBoards);
+    connect(smartButton, &QPushButton::clicked, this, &MainWindow::generateSmartBoard); connect(sampleButton, &QPushButton::clicked, this, &MainWindow::analyzeSampleLayout); connect(ocrButton, &QPushButton::clicked, this, &MainWindow::ocrSampleImage); connect(templateButton, &QPushButton::clicked, this, &MainWindow::openTemplateLibrary); connect(brandButton, &QPushButton::clicked, this, &MainWindow::applyBrandProfile); connect(printButton, &QPushButton::clicked, this, [this] { preflightDocument(); exportPrintPdf(); }); connect(batchButton, &QPushButton::clicked, this, &MainWindow::batchGenerateBoards);
     productionDock->setWidget(panel); addDockWidget(Qt::RightDockWidgetArea, productionDock); tabifyDockWidget(objectsDock, productionDock); objectsDock->raise();
 }
 
@@ -1063,6 +1196,76 @@ void MainWindow::analyzeSampleLayout()
     const QSizeF sizeMm = boardSizeMillimeters(sizeCombo->currentText()); const QRectF page(100, 100, sizeMm.width() * 10.0, sizeMm.height() * 10.0); m_restoring = true; m_canvas->scene()->clear(); m_canvas->setPageRect(page); m_fileName.clear(); m_history.clear(); m_historyIndex = -1; m_currentLayer = QStringLiteral("样图仿制"); m_canvas->setActiveLayer(m_currentLayer); addBoardDesign(m_canvas->scene(), page, title, body, footerEdit->text(), theme, headerRatio, marginRatio);
     if (logoBox->isChecked()) { const qreal side = qMin(page.width(), page.height()) * 0.095; const qreal gap = qMin(page.width(), page.height()) * marginRatio * 1.2; auto *logo = new QGraphicsRectItem(QRectF(page.left() + gap, page.top() + gap, side, side)); QPen pen(theme.accent.darker(130), qMax(4.0, side * 0.018), Qt::DashLine); logo->setPen(pen); logo->setBrush(QColor(255, 255, 255, 205)); prepareBoardItem(logo, QStringLiteral("rectangle"), QStringLiteral("LOGO占位框"), m_canvas->scene(), 5.0); auto *label = new QGraphicsTextItem(QStringLiteral("LOGO")); QFont font(QStringLiteral("Arial")); font.setBold(true); font.setPointSizeF(side * 0.09); label->setFont(font); label->setDefaultTextColor(theme.primary); label->setTextWidth(side); QTextOption option = label->document()->defaultTextOption(); option.setAlignment(Qt::AlignCenter); label->document()->setDefaultTextOption(option); label->setPos(logo->rect().left(), logo->rect().center().y() - label->boundingRect().height() / 2.0); prepareBoardItem(label, QStringLiteral("text"), QStringLiteral("LOGO占位文字"), m_canvas->scene(), 6.0); }
     m_restoring = false; m_modified = true; recordHistory(QStringLiteral("样图版式分析生成")); m_canvas->zoomToFit(); updateObjectList(); updateWindowTitle(); setStatus(QStringLiteral("样图版式已分析并生成可编辑对象"));
+}
+
+void MainWindow::configureBrandProfile()
+{
+    BrandProfile profile = loadBrandProfile();
+    QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("公司品牌资料")); dialog.resize(560, 360); QFormLayout layout(&dialog);
+    auto *companyEdit = new QLineEdit(profile.company); companyEdit->setPlaceholderText(QStringLiteral("例如：匠心图文有限公司"));
+    auto *logoEdit = new QLineEdit(profile.logoPath); logoEdit->setPlaceholderText(QStringLiteral("支持 SVG、PNG、JPG、BMP、TIFF"));
+    auto *logoRow = new QWidget; auto *logoLayout = new QHBoxLayout(logoRow); logoLayout->setContentsMargins(0, 0, 0, 0); auto *browse = new QPushButton(QStringLiteral("浏览…")); logoLayout->addWidget(logoEdit, 1); logoLayout->addWidget(browse);
+    auto *primaryButton = new QPushButton(profile.primary.name().toUpper()); auto *accentButton = new QPushButton(profile.accent.name().toUpper());
+    auto updateColorButton = [](QPushButton *button, const QColor &color) { button->setText(color.name().toUpper()); button->setStyleSheet(QStringLiteral("QPushButton{background:%1;color:%2;padding:7px;border:1px solid #8b9299;}").arg(color.name(), color.lightness() < 145 ? QStringLiteral("white") : QStringLiteral("black"))); };
+    updateColorButton(primaryButton, profile.primary); updateColorButton(accentButton, profile.accent);
+    auto *position = new QComboBox; position->addItems({QStringLiteral("左上"), QStringLiteral("右上"), QStringLiteral("左下"), QStringLiteral("右下")}); position->setCurrentIndex(qBound(0, profile.logoPosition, 3));
+    auto *size = new QDoubleSpinBox; size->setRange(4.0, 25.0); size->setSuffix(QStringLiteral(" %（短边）")); size->setDecimals(1); size->setValue(profile.logoSizePercent);
+    auto *applyNow = new QCheckBox(QStringLiteral("保存后立即应用到当前设计")); applyNow->setChecked(true);
+    layout.addRow(QStringLiteral("公司名称/落款"), companyEdit); layout.addRow(QStringLiteral("LOGO文件"), logoRow); layout.addRow(QStringLiteral("品牌主色"), primaryButton); layout.addRow(QStringLiteral("品牌辅色"), accentButton); layout.addRow(QStringLiteral("LOGO位置"), position); layout.addRow(QStringLiteral("LOGO尺寸"), size); layout.addRow(applyNow);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel); buttons->button(QDialogButtonBox::Save)->setText(QStringLiteral("保存品牌资料")); buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消")); layout.addRow(buttons);
+    connect(browse, &QPushButton::clicked, &dialog, [&] { const QString file = QFileDialog::getOpenFileName(&dialog, QStringLiteral("选择公司LOGO"), logoEdit->text(), QStringLiteral("LOGO文件 (*.svg *.png *.jpg *.jpeg *.bmp *.tif *.tiff)")); if (!file.isEmpty()) logoEdit->setText(file); });
+    connect(primaryButton, &QPushButton::clicked, &dialog, [&] { const QColor color = QColorDialog::getColor(profile.primary, &dialog, QStringLiteral("选择品牌主色")); if (color.isValid()) { profile.primary = color; updateColorButton(primaryButton, color); } });
+    connect(accentButton, &QPushButton::clicked, &dialog, [&] { const QColor color = QColorDialog::getColor(profile.accent, &dialog, QStringLiteral("选择品牌辅色")); if (color.isValid()) { profile.accent = color; updateColorButton(accentButton, color); } });
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+    profile.company = companyEdit->text().trimmed(); profile.logoPath = logoEdit->text().trimmed(); profile.logoPosition = position->currentIndex(); profile.logoSizePercent = size->value();
+    if (!profile.logoPath.isEmpty() && !QFileInfo::exists(profile.logoPath)) { QMessageBox::warning(this, QStringLiteral("LOGO不存在"), QStringLiteral("找不到所选LOGO文件，请重新选择。")); return; }
+    saveBrandProfile(profile); setStatus(QStringLiteral("品牌资料已保存在本机"));
+    if (applyNow->isChecked()) applyBrandProfile();
+}
+
+void MainWindow::applyBrandProfile()
+{
+    const BrandProfile profile = loadBrandProfile();
+    if (profile.isEmpty()) { configureBrandProfile(); return; }
+    QString logoError; const int changed = applyBrandToScene(m_canvas->scene(), m_canvas->pageRect(), profile, &logoError);
+    if (changed > 0) markModified(QStringLiteral("已应用品牌资料：%1处对象更新").arg(changed));
+    else setStatus(QStringLiteral("当前设计中没有可更新的品牌对象"));
+    if (!logoError.isEmpty()) QMessageBox::warning(this, QStringLiteral("LOGO未应用"), logoError);
+}
+
+void MainWindow::batchApplyBrandProfile()
+{
+    const BrandProfile profile = loadBrandProfile();
+    if (profile.isEmpty()) { QMessageBox::information(this, QStringLiteral("尚未配置品牌"), QStringLiteral("请先在“品牌”菜单中配置公司名称、LOGO和品牌色。")); return; }
+    QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("选择需要批量套版的JXV工程（最多20个）"), {}, QStringLiteral("匠心矢量工程 (*.jxv)"));
+    if (files.isEmpty()) return; if (files.size() > 20) { QMessageBox::warning(this, QStringLiteral("数量过多"), QStringLiteral("一次最多处理20个工程。")); return; }
+    const QString outputDirectory = QFileDialog::getExistingDirectory(this, QStringLiteral("选择品牌版工程输出文件夹")); if (outputDirectory.isEmpty()) return;
+    QProgressDialog progress(QStringLiteral("正在批量应用品牌资料…"), QStringLiteral("取消"), 0, files.size(), this); progress.setWindowModality(Qt::WindowModal); progress.setMinimumDuration(0);
+    int succeeded = 0; QStringList errors;
+    for (int index = 0; index < files.size(); ++index) {
+        progress.setValue(index); QApplication::processEvents(); if (progress.wasCanceled()) break;
+        QString error; const QJsonObject document = DocumentIO::loadFile(files[index], &error); QGraphicsScene scene; QRectF page;
+        if (document.isEmpty() || !DocumentIO::restoreDocument(&scene, document, &page, &error)) { errors.append(QFileInfo(files[index]).fileName() + QStringLiteral("：") + error); continue; }
+        QString logoError; applyBrandToScene(&scene, page, profile, &logoError);
+        const QString output = QDir(outputDirectory).filePath(safeFileStem(QFileInfo(files[index]).completeBaseName()) + QStringLiteral("-品牌版.jxv"));
+        if (!DocumentIO::saveFile(output, DocumentIO::serializeDocument(&scene, page), &error)) errors.append(QFileInfo(files[index]).fileName() + QStringLiteral("：") + error);
+        else { ++succeeded; if (!logoError.isEmpty()) errors.append(QFileInfo(files[index]).fileName() + QStringLiteral("：") + logoError); }
+    }
+    progress.setValue(files.size());
+    QString message = QStringLiteral("已生成 %1 个品牌版JXV工程。\n输出位置：%2").arg(succeeded).arg(QDir::toNativeSeparators(outputDirectory)); if (!errors.isEmpty()) message += QStringLiteral("\n\n提示：\n") + errors.join('\n');
+    QMessageBox::information(this, QStringLiteral("批量套版完成"), message); setStatus(QStringLiteral("批量品牌套版完成：%1个").arg(succeeded));
+}
+
+void MainWindow::findReplaceDocumentText()
+{
+    QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("全局查找替换文字")); QFormLayout layout(&dialog); auto *findEdit = new QLineEdit; auto *replaceEdit = new QLineEdit; auto *caseSensitive = new QCheckBox(QStringLiteral("区分大小写"));
+    layout.addRow(QStringLiteral("查找内容"), findEdit); layout.addRow(QStringLiteral("替换为"), replaceEdit); layout.addRow(caseSensitive); auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("全部替换")); buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消")); layout.addRow(buttons); connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return; const QString needle = findEdit->text(); if (needle.isEmpty()) return; const Qt::CaseSensitivity sensitivity = caseSensitive->isChecked() ? Qt::CaseSensitive : Qt::CaseInsensitive;
+    int occurrences = 0, objects = 0;
+    for (QGraphicsItem *item : m_canvas->scene()->items()) if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) { const QString source = text->toPlainText(); int position = 0, count = 0; while ((position = source.indexOf(needle, position, sensitivity)) >= 0) { ++count; position += qMax(1, needle.size()); } if (count > 0) { QString replaced = source; replaced.replace(needle, replaceEdit->text(), sensitivity); text->setPlainText(replaced); occurrences += count; ++objects; } }
+    if (occurrences == 0) { QMessageBox::information(this, QStringLiteral("未找到"), QStringLiteral("当前文档中没有找到“%1”。").arg(needle)); return; }
+    markModified(QStringLiteral("已在%1个文字对象中替换%2处内容").arg(objects).arg(occurrences));
 }
 
 void MainWindow::saveCurrentAsTemplate()
@@ -1719,7 +1922,7 @@ void MainWindow::chooseSecondFillColor()
 
 void MainWindow::updateWindowTitle()
 {
-    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.8 Native").arg(m_modified ? "*" : "", name));
+    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.9 Native").arg(m_modified ? "*" : "", name));
 }
 
 void MainWindow::setStatus(const QString &message) { if (m_statusLabel) m_statusLabel->setText(message); }
