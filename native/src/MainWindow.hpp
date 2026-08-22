@@ -10,10 +10,12 @@
 
 class QAction;
 class QActionGroup;
+class QBrush;
 class QDoubleSpinBox;
 class QLabel;
 class QListWidget;
 class QComboBox;
+class QFontComboBox;
 class QToolButton;
 
 class MainWindow final : public QMainWindow
@@ -31,6 +33,8 @@ private:
     void buildMenus();
     void buildToolbox();
     void buildPropertyBar();
+    void buildTextAndColorBar();
+    void buildColorPalette();
     void buildCentralCanvas();
     void buildDockers();
     void connectSignals();
@@ -70,6 +74,11 @@ private:
     void toggleLayerLocked();
     void applyLayerState();
     void applyInspector();
+    void editSelectedText();
+    void autoFitSelectedText();
+    void chooseSecondFillColor();
+    QBrush selectedFillBrush(const QRectF &bounds) const;
+    void applyQuickColor(const QColor &color);
     void chooseFillColor();
     void chooseStrokeColor();
     void renderForExport(QPainter *painter, const QRectF &target);
@@ -87,8 +96,19 @@ private:
     QDoubleSpinBox *m_hSpin = nullptr;
     QDoubleSpinBox *m_rotationSpin = nullptr;
     QDoubleSpinBox *m_strokeWidthSpin = nullptr;
+    QDoubleSpinBox *m_fontSizeSpin = nullptr;
+    QDoubleSpinBox *m_textWidthSpin = nullptr;
+    QDoubleSpinBox *m_textHeightSpin = nullptr;
+    QDoubleSpinBox *m_opacitySpin = nullptr;
+    QFontComboBox *m_fontCombo = nullptr;
+    QComboBox *m_alignmentCombo = nullptr;
+    QComboBox *m_fillModeCombo = nullptr;
+    QComboBox *m_outlineStyleCombo = nullptr;
+    QToolButton *m_boldButton = nullptr;
+    QToolButton *m_italicButton = nullptr;
     QToolButton *m_fillButton = nullptr;
     QToolButton *m_strokeButton = nullptr;
+    QToolButton *m_secondFillButton = nullptr;
     QActionGroup *m_toolActions = nullptr;
     QJsonArray m_clipboard;
     QVector<QJsonObject> m_history;
@@ -99,4 +119,5 @@ private:
     QString m_currentLayer = QStringLiteral("图层 1");
     QColor m_fillColor {244, 197, 66};
     QColor m_strokeColor {34, 34, 34};
+    QColor m_secondFillColor {235, 75, 75};
 };
