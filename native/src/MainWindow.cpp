@@ -10,9 +10,9 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGraphicsItemGroup>
+#include <QGraphicsItem>
 #include <QGraphicsPathItem>
 #include <QGraphicsScene>
-#include <QGraphicsShapeItem>
 #include <QGraphicsTextItem>
 #include <QGridLayout>
 #include <QImage>

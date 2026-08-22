@@ -147,7 +147,8 @@ QJsonObject DocumentIO::serializeDocument(QGraphicsScene *scene, const QRectF &p
 bool DocumentIO::restoreDocument(QGraphicsScene *scene, const QJsonObject &document, QRectF *pageRect, QString *error)
 {
     if (document["format"].toString() != "JiangxinVectorDocument") {
-        if (error) *error = QStringLiteral("不是有效的匠心矢量文档"); return false;
+        if (error) *error = QStringLiteral("不是有效的匠心矢量文档");
+        return false;
     }
     scene->clear(); if (pageRect) *pageRect = rectFromJson(document["page"].toObject());
     restoreItems(scene, document["items"].toArray()); return true;
@@ -179,4 +180,3 @@ QJsonObject DocumentIO::loadFile(const QString &fileName, QString *error)
     if (parseError.error != QJsonParseError::NoError) { if (error) *error = parseError.errorString(); return {}; }
     return document.object();
 }
-
