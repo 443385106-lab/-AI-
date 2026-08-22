@@ -41,6 +41,7 @@ CanvasView::CanvasView(QWidget *parent) : QGraphicsView(parent)
     connect(verticalScrollBar(), &QScrollBar::valueChanged, this, &CanvasView::viewChanged);
     connect(graphicsScene, &QGraphicsScene::selectionChanged, this, [this] {
         if (m_tool == Tool::Node) rebuildNodeHandles();
+        if (m_tool == Tool::Select) rebuildTextFrameHandles();
     });
 }
 
@@ -57,6 +58,7 @@ void CanvasView::setTool(Tool tool)
                           : tool == Tool::Select || tool == Tool::Node ? Qt::ArrowCursor
                                                                     : Qt::CrossCursor);
     if (tool == Tool::Node) rebuildNodeHandles(); else clearNodeHandles();
+    if (tool == Tool::Select) rebuildTextFrameHandles(); else clearTextFrameHandles();
     Q_EMIT toolChanged(tool);
 }
 
@@ -117,6 +119,66 @@ void CanvasView::notifyDocumentChanged()
 {
     scene()->update();
     viewport()->update();
+    if (m_tool == Tool::Select) rebuildTextFrameHandles();
+}
+
+void CanvasView::refreshTextFrameHandles()
+{
+    if (m_tool == Tool::Select) rebuildTextFrameHandles();
+}
+
+void CanvasView::clearTextFrameOverlays()
+{
+    m_resizingText = nullptr; m_resizeHandle = -1; clearTextFrameHandles();
+}
+
+void CanvasView::clearTextFrameHandles()
+{
+    const auto handles = m_textFrameHandles; m_textFrameHandles.clear();
+    for (QGraphicsRectItem *handle : handles) { if (handle->scene()) handle->scene()->removeItem(handle); delete handle; }
+    if (m_textFrameOutline) { if (m_textFrameOutline->scene()) m_textFrameOutline->scene()->removeItem(m_textFrameOutline); delete m_textFrameOutline; m_textFrameOutline = nullptr; }
+}
+
+void CanvasView::rebuildTextFrameHandles()
+{
+    clearTextFrameHandles();
+    if (m_tool != Tool::Select || m_resizingText) return;
+    const auto selected = scene()->selectedItems(); if (selected.size() != 1) return;
+    auto *text = dynamic_cast<QGraphicsTextItem *>(selected.first());
+    if (!text || !text->data(ParagraphRole).toBool() || text->data(3).toBool()) return;
+    const qreal width = text->textWidth() > 0.0 ? text->textWidth() : text->boundingRect().width();
+    const qreal height = text->data(TextBoxHeightRole).toDouble() > 0.0 ? text->data(TextBoxHeightRole).toDouble() : text->boundingRect().height();
+    const QRectF frame = text->sceneTransform().mapRect(QRectF(0.0, 0.0, qMax(40.0, width), qMax(30.0, height)));
+    const bool overflow = text->boundingRect().height() > height + 0.5;
+    m_textFrameOutline = new QGraphicsRectItem(frame); QPen outline(overflow ? QColor(QStringLiteral("#E53935")) : QColor(QStringLiteral("#1479D1")), 1.2, overflow ? Qt::DashLine : Qt::SolidLine); outline.setCosmetic(true); m_textFrameOutline->setPen(outline); m_textFrameOutline->setBrush(Qt::NoBrush); m_textFrameOutline->setZValue(100000.0); scene()->addItem(m_textFrameOutline);
+    const QList<QPointF> positions {frame.topLeft(), QPointF(frame.center().x(), frame.top()), frame.topRight(), QPointF(frame.right(), frame.center().y()), frame.bottomRight(), QPointF(frame.center().x(), frame.bottom()), frame.bottomLeft(), QPointF(frame.left(), frame.center().y())};
+    for (int index = 0; index < positions.size(); ++index) {
+        auto *handle = new QGraphicsRectItem(QRectF(-4.5, -4.5, 9.0, 9.0)); handle->setPos(positions[index]); handle->setPen(QPen(Qt::white, 1.0)); handle->setBrush(overflow ? QColor(QStringLiteral("#E53935")) : QColor(QStringLiteral("#1479D1"))); handle->setFlag(QGraphicsItem::ItemIgnoresTransformations); handle->setZValue(100001.0); handle->setData(0, index); scene()->addItem(handle); m_textFrameHandles.append(handle);
+    }
+}
+
+void CanvasView::resizeTextFrame(const QPointF &scenePoint, Qt::KeyboardModifiers modifiers)
+{
+    if (!m_resizingText || m_resizeHandle < 0) return;
+    QRectF frame = m_originalTextFrame; const QPointF delta = scenePoint - m_resizeStartPoint;
+    if (m_resizeHandle == 0 || m_resizeHandle == 6 || m_resizeHandle == 7) frame.setLeft(frame.left() + delta.x());
+    if (m_resizeHandle == 2 || m_resizeHandle == 3 || m_resizeHandle == 4) frame.setRight(frame.right() + delta.x());
+    if (m_resizeHandle == 0 || m_resizeHandle == 1 || m_resizeHandle == 2) frame.setTop(frame.top() + delta.y());
+    if (m_resizeHandle == 4 || m_resizeHandle == 5 || m_resizeHandle == 6) frame.setBottom(frame.bottom() + delta.y());
+    const qreal ratio = m_originalTextFrame.width() / qMax(1.0, m_originalTextFrame.height());
+    if (modifiers.testFlag(Qt::ShiftModifier) && m_resizeHandle % 2 == 0) {
+        if (qAbs(frame.width() - m_originalTextFrame.width()) >= qAbs(frame.height() - m_originalTextFrame.height()) * ratio) frame.setHeight(qAbs(frame.width()) / ratio);
+        else frame.setWidth(qAbs(frame.height()) * ratio);
+        if (m_resizeHandle == 0 || m_resizeHandle == 2) frame.moveBottom(m_originalTextFrame.bottom());
+        if (m_resizeHandle == 0 || m_resizeHandle == 6) frame.moveRight(m_originalTextFrame.right());
+    }
+    if (frame.width() < 40.0) { if (m_resizeHandle == 0 || m_resizeHandle == 6 || m_resizeHandle == 7) frame.setLeft(frame.right() - 40.0); else frame.setRight(frame.left() + 40.0); }
+    if (frame.height() < 30.0) { if (m_resizeHandle == 0 || m_resizeHandle == 1 || m_resizeHandle == 2) frame.setTop(frame.bottom() - 30.0); else frame.setBottom(frame.top() + 30.0); }
+    m_resizingText->setPos(frame.topLeft()); m_resizingText->setTextWidth(frame.width()); m_resizingText->setData(TextBoxHeightRole, frame.height()); m_resizingText->setData(ParagraphRole, true);
+    if (modifiers.testFlag(Qt::ControlModifier)) { QFont font = m_originalTextFont; const qreal factor = qMin(frame.width() / qMax(1.0, m_originalTextFrame.width()), frame.height() / qMax(1.0, m_originalTextFrame.height())); font.setPointSizeF(qBound(6.0, m_originalTextFont.pointSizeF() * factor, 500.0)); m_resizingText->setFont(font); }
+    if (m_textFrameOutline) m_textFrameOutline->setRect(frame);
+    const QList<QPointF> positions {frame.topLeft(), QPointF(frame.center().x(), frame.top()), frame.topRight(), QPointF(frame.right(), frame.center().y()), frame.bottomRight(), QPointF(frame.center().x(), frame.bottom()), frame.bottomLeft(), QPointF(frame.left(), frame.center().y())};
+    for (int index = 0; index < m_textFrameHandles.size(); ++index) m_textFrameHandles[index]->setPos(positions[index]);
 }
 
 void CanvasView::drawBackground(QPainter *painter, const QRectF &rect)
@@ -180,7 +242,18 @@ void CanvasView::mousePressEvent(QMouseEvent *event)
         return;
     }
 
-    const QPointF point = snapped(mapToScene(event->position().toPoint()));
+    const QPointF rawPoint = mapToScene(event->position().toPoint());
+    if (m_tool == Tool::Select) {
+        const QList<QGraphicsItem *> underMouse = items(event->position().toPoint());
+        for (QGraphicsItem *candidate : underMouse) {
+            int index = -1; for (int handleIndex = 0; handleIndex < m_textFrameHandles.size(); ++handleIndex) if (candidate == m_textFrameHandles[handleIndex]) { index = handleIndex; break; }
+            if (index >= 0) {
+                const auto selected = scene()->selectedItems(); if (selected.size() == 1) m_resizingText = dynamic_cast<QGraphicsTextItem *>(selected.first());
+                if (m_resizingText) { m_resizeHandle = index; m_resizeStartPoint = rawPoint; const qreal width = m_resizingText->textWidth() > 0.0 ? m_resizingText->textWidth() : m_resizingText->boundingRect().width(); const qreal height = m_resizingText->data(TextBoxHeightRole).toDouble() > 0.0 ? m_resizingText->data(TextBoxHeightRole).toDouble() : m_resizingText->boundingRect().height(); m_originalTextFrame = QRectF(m_resizingText->pos(), QSizeF(width, height)); m_originalTextFont = m_resizingText->font(); event->accept(); return; }
+            }
+        }
+    }
+    const QPointF point = snapped(rawPoint);
     m_startPoint = point;
     if (m_tool == Tool::Select || m_tool == Tool::Node || m_tool == Tool::Pan) {
         QGraphicsView::mousePressEvent(event);
@@ -258,7 +331,9 @@ void CanvasView::mousePressEvent(QMouseEvent *event)
 
 void CanvasView::mouseMoveEvent(QMouseEvent *event)
 {
-    const QPointF point = snapped(mapToScene(event->position().toPoint()));
+    const QPointF rawPoint = mapToScene(event->position().toPoint());
+    if (m_resizingText) { resizeTextFrame(rawPoint, event->modifiers()); Q_EMIT cursorScenePositionChanged(rawPoint); event->accept(); return; }
+    const QPointF point = snapped(rawPoint);
     Q_EMIT cursorScenePositionChanged(point);
     if (!m_drawingItem) {
         QGraphicsView::mouseMoveEvent(event);
@@ -288,6 +363,7 @@ void CanvasView::finishDrawing(const QString &reason)
 
 void CanvasView::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (m_resizingText) { m_resizingText = nullptr; m_resizeHandle = -1; rebuildTextFrameHandles(); Q_EMIT documentCommitted(QStringLiteral("调整文本框尺寸")); event->accept(); return; }
     if (m_drawingItem) {
         finishDrawing(QStringLiteral("绘制对象"));
         return;

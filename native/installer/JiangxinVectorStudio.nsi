@@ -2,11 +2,11 @@ Unicode true
 !include "MUI2.nsh"
 
 !ifndef OUTFILE
-  !define OUTFILE "..\dist\JiangxinVectorStudio-1.9.0-Setup.exe"
+  !define OUTFILE "..\dist\JiangxinVectorStudio-1.10.0-Setup.exe"
 !endif
 
 Name "匠心矢量设计"
-Caption "匠心矢量设计 1.9.0 安装程序"
+Caption "匠心矢量设计 1.10.0 安装程序"
 UninstallCaption "卸载匠心矢量设计"
 BrandingText "匠心图文"
 OutFile "${OUTFILE}"
@@ -19,11 +19,11 @@ ShowUninstDetails show
 Icon "..\..\assets\app-icon.ico"
 UninstallIcon "..\..\assets\app-icon.ico"
 
-VIProductVersion "1.9.0.0"
+VIProductVersion "1.10.0.0"
 VIAddVersionKey /LANG=2052 "ProductName" "匠心矢量设计"
 VIAddVersionKey /LANG=2052 "CompanyName" "匠心图文"
 VIAddVersionKey /LANG=2052 "FileDescription" "国产原生矢量设计软件"
-VIAddVersionKey /LANG=2052 "FileVersion" "1.9.0"
+VIAddVersionKey /LANG=2052 "FileVersion" "1.10.0"
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "..\..\assets\app-icon.ico"
@@ -83,7 +83,7 @@ copy_files:
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\JiangxinVectorStudio" "DisplayName" "匠心矢量设计"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\JiangxinVectorStudio" "UninstallString" "$INSTDIR\Uninstall.exe"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\JiangxinVectorStudio" "Publisher" "匠心图文"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\JiangxinVectorStudio" "DisplayVersion" "1.9.0"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\JiangxinVectorStudio" "DisplayVersion" "1.10.0"
 SectionEnd
 
 Section "Uninstall"
