@@ -1,11 +1,14 @@
 #include "DocumentIO.hpp"
 
+#include <QBuffer>
+#include <QByteArray>
 #include <QFile>
 #include <QFont>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsItemGroup>
 #include <QGraphicsLineItem>
 #include <QGraphicsPathItem>
+#include <QGraphicsPixmapItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGraphicsTextItem>
@@ -141,6 +144,10 @@ QJsonObject serializeOne(QGraphicsItem *item)
         const auto *shape = static_cast<QGraphicsLineItem *>(item);
         const QLineF line = shape->line();
         json["line"] = QJsonArray {line.x1(), line.y1(), line.x2(), line.y2()}; json["pen"] = penToJson(shape->pen());
+    } else if (kind == "bitmap") {
+        const auto *bitmap = static_cast<QGraphicsPixmapItem *>(item); QByteArray png;
+        QBuffer buffer(&png); buffer.open(QIODevice::WriteOnly); bitmap->pixmap().save(&buffer, "PNG");
+        json["png"] = QString::fromLatin1(png.toBase64()); json["offset"] = rectToJson(QRectF(bitmap->offset(), QSizeF()));
     } else if (kind == "path" || kind == "clip") {
         const auto *shape = static_cast<QGraphicsPathItem *>(item);
         json["path"] = pathToJson(shape->path()); json["pen"] = penToJson(shape->pen());
@@ -188,6 +195,10 @@ QGraphicsItem *restoreOne(QGraphicsScene *scene, const QJsonObject &json, const 
         const QJsonArray a = json["line"].toArray(); if (a.size() != 4) return nullptr;
         auto *shape = new QGraphicsLineItem(QLineF(a[0].toDouble(), a[1].toDouble(), a[2].toDouble(), a[3].toDouble()));
         shape->setPen(penFromJson(json["pen"].toObject())); item = shape;
+    } else if (kind == "bitmap") {
+        QPixmap pixmap; pixmap.loadFromData(QByteArray::fromBase64(json["png"].toString().toLatin1()), "PNG");
+        if (pixmap.isNull()) return nullptr;
+        auto *bitmap = new QGraphicsPixmapItem(pixmap); bitmap->setOffset(rectFromJson(json["offset"].toObject()).topLeft()); item = bitmap;
     } else if (kind == "path" || kind == "clip") {
         auto *shape = new QGraphicsPathItem(pathFromJson(json["path"].toArray()));
         shape->setPen(penFromJson(json["pen"].toObject()));
@@ -219,7 +230,7 @@ QJsonObject DocumentIO::serializeDocument(QGraphicsScene *scene, const QRectF &p
 {
     QList<QGraphicsItem *> roots;
     for (QGraphicsItem *item : scene->items(Qt::AscendingOrder)) if (!item->parentItem()) roots.append(item);
-    return {{"format", "JiangxinVectorDocument"}, {"version", 3}, {"page", rectToJson(pageRect)},
+    return {{"format", "JiangxinVectorDocument"}, {"version", 4}, {"page", rectToJson(pageRect)},
             {"items", serializeItems(roots)}};
 }
 
