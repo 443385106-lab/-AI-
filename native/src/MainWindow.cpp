@@ -6,10 +6,13 @@
 #include <QActionGroup>
 #include <QCloseEvent>
 #include <QColorDialog>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QDockWidget>
 #include <QFileDialog>
+#include <QFile>
 #include <QFileInfo>
+#include <QFontDatabase>
 #include <QFontComboBox>
 #include <QAbstractGraphicsShapeItem>
 #include <QGraphicsItemGroup>
@@ -21,6 +24,7 @@
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGraphicsTextItem>
+#include <QGraphicsSvgItem>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QImage>
@@ -39,9 +43,11 @@
 #include <QRadialGradient>
 #include <QPdfWriter>
 #include <QPushButton>
+#include <QProgressDialog>
 #include <QSet>
 #include <QStatusBar>
 #include <QSvgGenerator>
+#include <QSvgRenderer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTextBlockFormat>
@@ -60,6 +66,7 @@ constexpr int LockedRole = 3;
 constexpr int VisibleRole = 4;
 constexpr int TextBoxHeightRole = 5;
 constexpr int ParagraphRole = 6;
+constexpr int SvgDataRole = 7;
 
 QString toolName(CanvasView::Tool tool)
 {
@@ -89,6 +96,7 @@ QString itemIcon(const QString &kind)
     if (kind == "group") return QStringLiteral("▣");
     if (kind == "clip") return QStringLiteral("▧");
     if (kind == "bitmap") return QStringLiteral("▦");
+    if (kind == "svg") return QStringLiteral("◆");
     return QStringLiteral("◇");
 }
 
@@ -115,6 +123,9 @@ QPainterPath localItemPath(QGraphicsItem *item)
     }
     if (auto *bitmap = dynamic_cast<QGraphicsPixmapItem *>(item)) {
         QPainterPath path; path.addRect(bitmap->boundingRect()); return path;
+    }
+    if (auto *svg = dynamic_cast<QGraphicsSvgItem *>(item)) {
+        QPainterPath path; path.addRect(svg->boundingRect()); return path;
     }
     QPainterPath combined;
     for (QGraphicsItem *child : item->childItems()) combined = combined.united(item->mapFromItem(child, localItemPath(child)));
@@ -183,11 +194,17 @@ void MainWindow::buildMenus()
     fileMenu->addAction(QStringLiteral("打开…(&O)"), QKeySequence::Open, this, &MainWindow::openDocument);
     fileMenu->addAction(QStringLiteral("保存(&S)"), QKeySequence::Save, this, [this] { saveDocument(false); });
     fileMenu->addAction(QStringLiteral("另存为…"), QKeySequence::SaveAs, this, [this] { saveDocument(true); });
+    fileMenu->addAction(QStringLiteral("导入SVG矢量图…"), this, &MainWindow::importSvg);
     fileMenu->addSeparator();
     auto *exportMenu = fileMenu->addMenu(QStringLiteral("导出"));
     exportMenu->addAction(QStringLiteral("SVG矢量图…"), this, &MainWindow::exportSvg);
     exportMenu->addAction(QStringLiteral("PDF文件…"), this, &MainWindow::exportPdf);
     exportMenu->addAction(QStringLiteral("PNG高清图…"), this, &MainWindow::exportPng);
+    exportMenu->addAction(QStringLiteral("JPG高清图…"), this, [this] { exportImage(QStringLiteral("JPG")); });
+    exportMenu->addAction(QStringLiteral("TIFF印刷图…"), this, [this] { exportImage(QStringLiteral("TIFF")); });
+    exportMenu->addSeparator();
+    exportMenu->addAction(QStringLiteral("印刷PDF（出血与裁切线）…"), this, &MainWindow::exportPrintPdf);
+    exportMenu->addAction(QStringLiteral("批量导出JXV文件夹…"), this, &MainWindow::batchExport);
     fileMenu->addSeparator();
     fileMenu->addAction(QStringLiteral("退出"), QKeySequence::Quit, this, &QWidget::close);
 
@@ -248,6 +265,11 @@ void MainWindow::buildMenus()
     layoutMenu->addAction(QStringLiteral("水平等距分布"), this, [this] { distributeSelection(true); });
     layoutMenu->addAction(QStringLiteral("垂直等距分布"), this, [this] { distributeSelection(false); });
 
+    auto *prepressMenu = menuBar()->addMenu(QStringLiteral("印前(&P)"));
+    prepressMenu->addAction(QStringLiteral("出血与裁切线设置…"), this, &MainWindow::configurePrintSettings);
+    prepressMenu->addAction(QStringLiteral("印前预检"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P), this, &MainWindow::preflightDocument);
+    prepressMenu->addAction(QStringLiteral("导出印刷PDF…"), this, &MainWindow::exportPrintPdf);
+
     auto *effectsMenu = menuBar()->addMenu(QStringLiteral("效果(&C)"));
     effectsMenu->addAction(QStringLiteral("线性渐变填充"), this, [this] { m_fillModeCombo->setCurrentIndex(1); applyInspector(); });
     effectsMenu->addAction(QStringLiteral("径向渐变填充"), this, [this] { m_fillModeCombo->setCurrentIndex(2); applyInspector(); });
@@ -275,7 +297,7 @@ void MainWindow::buildMenus()
     textMenu->addAction(QStringLiteral("文本框自动缩字"), this, &MainWindow::autoFitSelectedText);
     auto *helpMenu = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
     helpMenu->addAction(QStringLiteral("关于匠心矢量设计"), this, [this] {
-        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.3 Native\n第四阶段：轮廓图、矢量阴影、对象调和、封套预设、位图处理与离线基础描摹。\n不包含任何CorelDRAW专有代码或文件规范。"));
+        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.4 Native\n第五阶段：SVG导入、JPG/TIFF、批量导出、出血裁切线、印刷PDF与印前预检。\n不包含任何CorelDRAW专有代码或文件规范。"));
     });
 }
 
@@ -404,11 +426,13 @@ void MainWindow::buildDockers()
 
     auto *productionDock = new QDockWidget(QStringLiteral("生产与导出"), this); auto *panel = new QWidget; auto *layout = new QVBoxLayout(panel);
     auto *newButton = new QPushButton(QStringLiteral("新建设计")); auto *saveButton = new QPushButton(QStringLiteral("保存工程文件 .jxv"));
-    auto *svgButton = new QPushButton(QStringLiteral("导出 SVG 矢量图")); auto *pdfButton = new QPushButton(QStringLiteral("导出 PDF")); auto *pngButton = new QPushButton(QStringLiteral("导出 PNG 高清图"));
-    layout->addWidget(new QLabel(QStringLiteral("自主文档格式：JXV\n通用交付格式：SVG / PDF / PNG\nCDR通过已安装CorelDRAW联动生成。")));
-    layout->addWidget(newButton); layout->addWidget(saveButton); layout->addWidget(svgButton); layout->addWidget(pdfButton); layout->addWidget(pngButton); layout->addStretch();
+    auto *svgButton = new QPushButton(QStringLiteral("导出 SVG 矢量图")); auto *pdfButton = new QPushButton(QStringLiteral("导出普通 PDF")); auto *pngButton = new QPushButton(QStringLiteral("导出 PNG 高清图"));
+    auto *printButton = new QPushButton(QStringLiteral("印前预检并导出印刷 PDF")); auto *batchButton = new QPushButton(QStringLiteral("批量导出 JXV 文件"));
+    layout->addWidget(new QLabel(QStringLiteral("自主文档格式：JXV\n交付格式：SVG / PDF / PNG / JPG / TIFF\n印刷输出：300dpi、出血与裁切线。")));
+    layout->addWidget(newButton); layout->addWidget(saveButton); layout->addWidget(svgButton); layout->addWidget(pdfButton); layout->addWidget(pngButton); layout->addWidget(printButton); layout->addWidget(batchButton); layout->addStretch();
     connect(newButton, &QPushButton::clicked, this, &MainWindow::newDocument); connect(saveButton, &QPushButton::clicked, this, [this] { saveDocument(false); });
     connect(svgButton, &QPushButton::clicked, this, &MainWindow::exportSvg); connect(pdfButton, &QPushButton::clicked, this, &MainWindow::exportPdf); connect(pngButton, &QPushButton::clicked, this, &MainWindow::exportPng);
+    connect(printButton, &QPushButton::clicked, this, [this] { preflightDocument(); exportPrintPdf(); }); connect(batchButton, &QPushButton::clicked, this, &MainWindow::batchExport);
     productionDock->setWidget(panel); addDockWidget(Qt::RightDockWidgetArea, productionDock); tabifyDockWidget(objectsDock, productionDock); objectsDock->raise();
 }
 
@@ -529,11 +553,55 @@ void MainWindow::openDocument()
     m_canvas->setPageRect(page); m_fileName = fileName; m_modified = false; m_history.clear(); m_historyIndex = -1; recordHistory(QStringLiteral("打开文档")); m_canvas->zoomToFit(); applyLayerState(); updateWindowTitle();
 }
 
+void MainWindow::importSvg()
+{
+    const QString fileName = QFileDialog::getOpenFileName(this, QStringLiteral("导入SVG矢量图"), {}, QStringLiteral("SVG矢量图 (*.svg)"));
+    if (fileName.isEmpty()) return;
+    QFile file(fileName); if (!file.open(QIODevice::ReadOnly)) { QMessageBox::warning(this, QStringLiteral("导入失败"), file.errorString()); return; }
+    const QByteArray data = file.readAll();
+    auto *svg = new QGraphicsSvgItem; auto *renderer = new QSvgRenderer(data, svg);
+    if (!renderer->isValid()) { delete svg; QMessageBox::warning(this, QStringLiteral("导入失败"), QStringLiteral("SVG文件无效或包含不支持的内容")); return; }
+    svg->setSharedRenderer(renderer); svg->setData(SvgDataRole, data);
+    svg->setData(KindRole, QStringLiteral("svg")); svg->setData(NameRole, QFileInfo(fileName).completeBaseName()); svg->setData(LayerRole, m_currentLayer); svg->setData(VisibleRole, true);
+    svg->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable);
+    const QRectF bounds = svg->boundingRect(); const QRectF page = m_canvas->pageRect();
+    if (bounds.width() > page.width() || bounds.height() > page.height()) {
+        const qreal scale = qMin(page.width() / qMax(1.0, bounds.width()), page.height() / qMax(1.0, bounds.height())) * 0.9; svg->setScale(scale);
+    }
+    m_canvas->scene()->clearSelection(); m_canvas->scene()->addItem(svg);
+    const QRectF sceneBounds = svg->sceneBoundingRect(); svg->setPos(page.center() - sceneBounds.center()); svg->setSelected(true);
+    markModified(QStringLiteral("SVG矢量图已导入并保留矢量渲染"));
+}
+
 void MainWindow::renderForExport(QPainter *painter, const QRectF &target)
 {
     const auto selected = m_canvas->scene()->selectedItems(); m_canvas->scene()->clearSelection();
     m_canvas->scene()->render(painter, target, m_canvas->pageRect(), Qt::IgnoreAspectRatio);
     for (QGraphicsItem *item : selected) item->setSelected(true);
+}
+
+void MainWindow::renderPrintOutput(QPainter *painter, const QRectF &target)
+{
+    const auto selected = m_canvas->scene()->selectedItems(); m_canvas->scene()->clearSelection();
+    const qreal bleed = m_bleedMm * 10.0; const QRectF source = m_canvas->pageRect().adjusted(-bleed, -bleed, bleed, bleed);
+    m_canvas->scene()->render(painter, target, source, Qt::IgnoreAspectRatio);
+    if (m_cropMarks) drawCropMarks(painter, target, source);
+    for (QGraphicsItem *item : selected) item->setSelected(true);
+}
+
+void MainWindow::drawCropMarks(QPainter *painter, const QRectF &target, const QRectF &source)
+{
+    const QRectF page = m_canvas->pageRect();
+    const auto mapX = [&](qreal x) { return target.left() + (x - source.left()) * target.width() / source.width(); };
+    const auto mapY = [&](qreal y) { return target.top() + (y - source.top()) * target.height() / source.height(); };
+    const qreal left = mapX(page.left()), right = mapX(page.right()), top = mapY(page.top()), bottom = mapY(page.bottom());
+    const qreal mark = qMax(8.0, qMin((left - target.left()) * 0.72, (top - target.top()) * 0.72));
+    painter->save(); QPen pen(Qt::black); pen.setWidthF(0.6); painter->setPen(pen);
+    painter->drawLine(QPointF(left - mark, top), QPointF(left - 2.0, top)); painter->drawLine(QPointF(left, top - mark), QPointF(left, top - 2.0));
+    painter->drawLine(QPointF(right + 2.0, top), QPointF(right + mark, top)); painter->drawLine(QPointF(right, top - mark), QPointF(right, top - 2.0));
+    painter->drawLine(QPointF(left - mark, bottom), QPointF(left - 2.0, bottom)); painter->drawLine(QPointF(left, bottom + 2.0), QPointF(left, bottom + mark));
+    painter->drawLine(QPointF(right + 2.0, bottom), QPointF(right + mark, bottom)); painter->drawLine(QPointF(right, bottom + 2.0), QPointF(right, bottom + mark));
+    painter->restore();
 }
 
 void MainWindow::exportSvg()
@@ -552,10 +620,91 @@ void MainWindow::exportPdf()
 
 void MainWindow::exportPng()
 {
-    QString fileName = QFileDialog::getSaveFileName(this, QStringLiteral("导出PNG"), QStringLiteral("设计.png"), QStringLiteral("PNG高清图 (*.png)")); if (fileName.isEmpty()) return; if (!fileName.endsWith(".png", Qt::CaseInsensitive)) fileName += ".png";
+    exportImage(QStringLiteral("PNG"));
+}
+
+void MainWindow::exportImage(const QString &format)
+{
+    const QString extension = format.toLower(); const QString filter = QStringLiteral("%1高清图 (*.%2)").arg(format, extension);
+    QString fileName = QFileDialog::getSaveFileName(this, QStringLiteral("导出") + format, QStringLiteral("设计.") + extension, filter); if (fileName.isEmpty()) return; if (!fileName.endsWith("." + extension, Qt::CaseInsensitive)) fileName += "." + extension;
     const QSize size = (m_canvas->pageRect().size() * 3.0).toSize(); QImage image(size, QImage::Format_ARGB32_Premultiplied); image.fill(Qt::white); image.setDotsPerMeterX(11811); image.setDotsPerMeterY(11811);
     QPainter painter(&image); painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing | QPainter::SmoothPixmapTransform); renderForExport(&painter, QRectF(QPointF(), size)); painter.end();
-    if (!image.save(fileName)) QMessageBox::critical(this, QStringLiteral("导出失败"), QStringLiteral("无法写入PNG文件")); else setStatus(QStringLiteral("300dpi PNG导出完成"));
+    if (!image.save(fileName, format.toLatin1().constData(), format == QStringLiteral("JPG") ? 95 : -1)) QMessageBox::critical(this, QStringLiteral("导出失败"), QStringLiteral("无法写入") + format + QStringLiteral("文件")); else setStatus(QStringLiteral("300dpi ") + format + QStringLiteral("导出完成"));
+}
+
+void MainWindow::configurePrintSettings()
+{
+    bool ok = false; const qreal bleed = QInputDialog::getDouble(this, QStringLiteral("印前设置"), QStringLiteral("出血尺寸（毫米）"), m_bleedMm, 0.0, 20.0, 1, &ok); if (!ok) return;
+    const auto answer = QMessageBox::question(this, QStringLiteral("印前设置"), QStringLiteral("印刷PDF是否添加裁切标记？"), QMessageBox::Yes | QMessageBox::No, m_cropMarks ? QMessageBox::Yes : QMessageBox::No);
+    m_bleedMm = bleed; m_cropMarks = answer == QMessageBox::Yes; m_canvas->setBleed(m_bleedMm * 10.0); m_canvas->zoomToFit();
+    setStatus(QStringLiteral("印前设置：出血 %1 mm，裁切线%2").arg(m_bleedMm).arg(m_cropMarks ? QStringLiteral("开启") : QStringLiteral("关闭")));
+}
+
+void MainWindow::preflightDocument()
+{
+    QStringList warnings; int objectCount = 0, bitmapCount = 0, textCount = 0;
+    const QRectF safeArea = m_canvas->pageRect().adjusted(-m_bleedMm * 10.0, -m_bleedMm * 10.0, m_bleedMm * 10.0, m_bleedMm * 10.0);
+    const QStringList fonts = QFontDatabase::families();
+    for (QGraphicsItem *item : m_canvas->scene()->items()) {
+        if (item->parentItem() || item->data(KindRole).toString().isEmpty()) continue; ++objectCount;
+        if (!safeArea.contains(item->sceneBoundingRect())) warnings.append(QStringLiteral("• 对象“%1”超出页面与出血范围").arg(item->data(NameRole).toString()));
+        if (item->opacity() < 1.0) warnings.append(QStringLiteral("• 对象“%1”使用透明度，印刷前请检查叠印效果").arg(item->data(NameRole).toString()));
+        if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) {
+            ++textCount; if (text->toPlainText().trimmed().isEmpty()) warnings.append(QStringLiteral("• 存在空文字对象"));
+            if (!fonts.contains(text->font().family(), Qt::CaseInsensitive)) warnings.append(QStringLiteral("• 字体可能缺失：%1").arg(text->font().family()));
+            const qreal height = item->data(TextBoxHeightRole).toDouble(); if (height > 0.0 && text->boundingRect().height() > height) warnings.append(QStringLiteral("• 文字“%1”存在溢出").arg(text->toPlainText().left(18)));
+        }
+        if (auto *bitmap = dynamic_cast<QGraphicsPixmapItem *>(item)) {
+            ++bitmapCount; const qreal widthMm = item->sceneBoundingRect().width() / 10.0;
+            if (widthMm > 0.01) { const qreal dpi = bitmap->pixmap().width() * 25.4 / widthMm; if (dpi < 150.0) warnings.append(QStringLiteral("• 位图“%1”有效分辨率约 %2 dpi，建议不低于150dpi").arg(item->data(NameRole).toString()).arg(qRound(dpi))); }
+        }
+    }
+    QString report = QStringLiteral("对象：%1　文字：%2　位图：%3\n页面：%4 × %5 mm　出血：%6 mm\n\n")
+                         .arg(objectCount).arg(textCount).arg(bitmapCount).arg(m_canvas->pageRect().width() / 10.0).arg(m_canvas->pageRect().height() / 10.0).arg(m_bleedMm);
+    if (warnings.isEmpty()) report += QStringLiteral("预检通过：未发现常见版面、字体、溢出或低分辨率问题。\n\n当前输出使用RGB工作区；正式CMYK分色仍需交由CorelDRAW或专业印前软件复核。");
+    else report += QStringLiteral("发现 %1 项需要检查：\n%2\n\n当前输出使用RGB工作区；正式CMYK分色仍需专业印前软件复核。").arg(warnings.size()).arg(warnings.join('\n'));
+    QMessageBox message(warnings.isEmpty() ? QMessageBox::Information : QMessageBox::Warning, QStringLiteral("印前预检"), report, QMessageBox::Ok, this); message.setTextInteractionFlags(Qt::TextSelectableByMouse); message.exec();
+}
+
+void MainWindow::exportPrintPdf()
+{
+    QString fileName = QFileDialog::getSaveFileName(this, QStringLiteral("导出印刷PDF"), QStringLiteral("设计-印刷.pdf"), QStringLiteral("PDF印刷文件 (*.pdf)")); if (fileName.isEmpty()) return; if (!fileName.endsWith(".pdf", Qt::CaseInsensitive)) fileName += ".pdf";
+    const QSizeF pageMm(m_canvas->pageRect().width() / 10.0 + m_bleedMm * 2.0, m_canvas->pageRect().height() / 10.0 + m_bleedMm * 2.0);
+    QPdfWriter writer(fileName); writer.setResolution(300); writer.setPageSize(QPageSize(pageMm, QPageSize::Millimeter, QStringLiteral("含出血印刷页面"), QPageSize::ExactMatch)); writer.setPageMargins(QMarginsF(), QPageLayout::Millimeter);
+    QPainter painter(&writer); painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing | QPainter::SmoothPixmapTransform); renderPrintOutput(&painter, QRectF(0, 0, writer.width(), writer.height())); painter.end();
+    setStatus(QStringLiteral("300dpi印刷PDF导出完成（出血 %1 mm）").arg(m_bleedMm));
+}
+
+void MainWindow::batchExport()
+{
+    const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("选择需要批量导出的JXV文件（最多20个）"), {}, QStringLiteral("匠心矢量文档 (*.jxv)"));
+    if (files.isEmpty()) return;
+    const QString directory = QFileDialog::getExistingDirectory(this, QStringLiteral("选择输出文件夹")); if (directory.isEmpty()) return;
+    bool ok = false; const QString format = QInputDialog::getItem(this, QStringLiteral("批量导出"), QStringLiteral("输出格式"), {QStringLiteral("PDF"), QStringLiteral("SVG"), QStringLiteral("PNG"), QStringLiteral("JPG"), QStringLiteral("TIFF")}, 0, false, &ok); if (!ok) return;
+    const int count = qMin(20, files.size()); int succeeded = 0; QStringList errors;
+    QProgressDialog progress(QStringLiteral("正在批量导出…"), QStringLiteral("取消"), 0, count, this); progress.setWindowModality(Qt::WindowModal);
+    for (int index = 0; index < count; ++index) {
+        progress.setValue(index); progress.setLabelText(QFileInfo(files[index]).fileName()); if (progress.wasCanceled()) break;
+        QString error; const QJsonObject document = DocumentIO::loadFile(files[index], &error); QGraphicsScene scene; QRectF page;
+        if (document.isEmpty() || !DocumentIO::restoreDocument(&scene, document, &page, &error)) { errors.append(QFileInfo(files[index]).fileName() + QStringLiteral("：") + error); continue; }
+        const QString base = QDir(directory).filePath(QFileInfo(files[index]).completeBaseName()); bool saved = true;
+        if (format == QStringLiteral("SVG")) {
+            QSvgGenerator generator; generator.setFileName(base + QStringLiteral(".svg")); generator.setSize(page.size().toSize()); generator.setViewBox(QRect(QPoint(), page.size().toSize())); generator.setTitle(QStringLiteral("匠心矢量设计批量导出"));
+            QPainter painter(&generator); scene.render(&painter, QRectF(QPointF(), page.size()), page, Qt::IgnoreAspectRatio); painter.end();
+        } else if (format == QStringLiteral("PDF")) {
+            QPdfWriter writer(base + QStringLiteral(".pdf")); writer.setResolution(300); writer.setPageSize(QPageSize(page.size() / 10.0, QPageSize::Millimeter, QStringLiteral("自定义页面"), QPageSize::ExactMatch)); writer.setPageMargins(QMarginsF(), QPageLayout::Millimeter);
+            QPainter painter(&writer); scene.render(&painter, QRectF(0, 0, writer.width(), writer.height()), page, Qt::IgnoreAspectRatio); painter.end();
+        } else {
+            const QSize size = (page.size() * 3.0).toSize(); QImage image(size, QImage::Format_ARGB32_Premultiplied); image.fill(Qt::white); image.setDotsPerMeterX(11811); image.setDotsPerMeterY(11811);
+            QPainter painter(&image); painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing | QPainter::SmoothPixmapTransform); scene.render(&painter, QRectF(QPointF(), size), page, Qt::IgnoreAspectRatio); painter.end();
+            saved = image.save(base + QStringLiteral(".") + format.toLower(), format.toLatin1().constData(), format == QStringLiteral("JPG") ? 95 : -1);
+        }
+        if (saved) ++succeeded; else errors.append(QFileInfo(files[index]).fileName() + QStringLiteral("：写入失败"));
+    }
+    progress.setValue(count);
+    QString result = QStringLiteral("批量导出完成：%1/%2 个文件已输出到\n%3").arg(succeeded).arg(count).arg(QDir::toNativeSeparators(directory));
+    if (!errors.isEmpty()) result += QStringLiteral("\n\n失败项目：\n") + errors.join('\n');
+    QMessageBox::information(this, QStringLiteral("批量导出"), result); setStatus(QStringLiteral("批量导出完成：%1个文件").arg(succeeded));
 }
 
 void MainWindow::copySelection()
@@ -1038,7 +1187,7 @@ void MainWindow::chooseSecondFillColor()
 
 void MainWindow::updateWindowTitle()
 {
-    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.3 Native").arg(m_modified ? "*" : "", name));
+    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.4 Native").arg(m_modified ? "*" : "", name));
 }
 
 void MainWindow::setStatus(const QString &message) { if (m_statusLabel) m_statusLabel->setText(message); }

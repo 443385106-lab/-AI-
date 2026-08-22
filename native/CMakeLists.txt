@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(JiangxinVectorStudio VERSION 1.3.0 LANGUAGES CXX)
+project(JiangxinVectorStudio VERSION 1.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,7 +7,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Svg PrintSupport)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Svg SvgWidgets PrintSupport)
 
 qt_add_executable(JiangxinVectorStudio WIN32
     src/main.cpp
@@ -30,6 +30,7 @@ endif()
 target_link_libraries(JiangxinVectorStudio PRIVATE
     Qt6::Widgets
     Qt6::Svg
+    Qt6::SvgWidgets
     Qt6::PrintSupport
 )
 

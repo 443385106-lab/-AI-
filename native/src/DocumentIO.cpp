@@ -12,12 +12,14 @@
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGraphicsTextItem>
+#include <QGraphicsSvgItem>
 #include <QLinearGradient>
 #include <QJsonDocument>
 #include <QPainterPath>
 #include <QRadialGradient>
 #include <QTextDocument>
 #include <QTextOption>
+#include <QSvgRenderer>
 
 namespace {
 constexpr int KindRole = 0;
@@ -27,6 +29,7 @@ constexpr int LockedRole = 3;
 constexpr int VisibleRole = 4;
 constexpr int TextBoxHeightRole = 5;
 constexpr int ParagraphRole = 6;
+constexpr int SvgDataRole = 7;
 
 QJsonObject rectToJson(const QRectF &rect)
 {
@@ -148,6 +151,8 @@ QJsonObject serializeOne(QGraphicsItem *item)
         const auto *bitmap = static_cast<QGraphicsPixmapItem *>(item); QByteArray png;
         QBuffer buffer(&png); buffer.open(QIODevice::WriteOnly); bitmap->pixmap().save(&buffer, "PNG");
         json["png"] = QString::fromLatin1(png.toBase64()); json["offset"] = rectToJson(QRectF(bitmap->offset(), QSizeF()));
+    } else if (kind == "svg") {
+        json["svg"] = QString::fromLatin1(item->data(SvgDataRole).toByteArray().toBase64());
     } else if (kind == "path" || kind == "clip") {
         const auto *shape = static_cast<QGraphicsPathItem *>(item);
         json["path"] = pathToJson(shape->path()); json["pen"] = penToJson(shape->pen());
@@ -199,6 +204,11 @@ QGraphicsItem *restoreOne(QGraphicsScene *scene, const QJsonObject &json, const 
         QPixmap pixmap; pixmap.loadFromData(QByteArray::fromBase64(json["png"].toString().toLatin1()), "PNG");
         if (pixmap.isNull()) return nullptr;
         auto *bitmap = new QGraphicsPixmapItem(pixmap); bitmap->setOffset(rectFromJson(json["offset"].toObject()).topLeft()); item = bitmap;
+    } else if (kind == "svg") {
+        const QByteArray data = QByteArray::fromBase64(json["svg"].toString().toLatin1());
+        auto *svg = new QGraphicsSvgItem; auto *renderer = new QSvgRenderer(data, svg);
+        if (!renderer->isValid()) { delete svg; return nullptr; }
+        svg->setSharedRenderer(renderer); svg->setData(SvgDataRole, data); item = svg;
     } else if (kind == "path" || kind == "clip") {
         auto *shape = new QGraphicsPathItem(pathFromJson(json["path"].toArray()));
         shape->setPen(penFromJson(json["pen"].toObject()));
@@ -230,7 +240,7 @@ QJsonObject DocumentIO::serializeDocument(QGraphicsScene *scene, const QRectF &p
 {
     QList<QGraphicsItem *> roots;
     for (QGraphicsItem *item : scene->items(Qt::AscendingOrder)) if (!item->parentItem()) roots.append(item);
-    return {{"format", "JiangxinVectorDocument"}, {"version", 4}, {"page", rectToJson(pageRect)},
+    return {{"format", "JiangxinVectorDocument"}, {"version", 5}, {"page", rectToJson(pageRect)},
             {"items", serializeItems(roots)}};
 }
 

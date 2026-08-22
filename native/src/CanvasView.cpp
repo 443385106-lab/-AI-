@@ -82,7 +82,8 @@ void CanvasView::setSnapEnabled(bool enabled)
 
 void CanvasView::zoomToFit()
 {
-    fitInView(m_pageRect.adjusted(-30.0, -30.0, 30.0, 30.0), Qt::KeepAspectRatio);
+    const qreal margin = qMax(30.0, m_bleedUnits + 20.0);
+    fitInView(m_pageRect.adjusted(-margin, -margin, margin, margin), Qt::KeepAspectRatio);
     Q_EMIT viewChanged();
 }
 
@@ -145,6 +146,12 @@ void CanvasView::drawBackground(QPainter *painter, const QRectF &rect)
     painter->setPen(edgePen);
     painter->setBrush(Qt::NoBrush);
     painter->drawRect(m_pageRect);
+
+    if (m_bleedUnits > 0.0) {
+        QPen bleedPen(QColor(220, 55, 55)); bleedPen.setStyle(Qt::DashLine); bleedPen.setCosmetic(true);
+        painter->setPen(bleedPen);
+        painter->drawRect(m_pageRect.adjusted(-m_bleedUnits, -m_bleedUnits, m_bleedUnits, m_bleedUnits));
+    }
 }
 
 QPointF CanvasView::snapped(const QPointF &point) const

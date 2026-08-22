@@ -51,9 +51,15 @@ private:
     bool saveDocument(bool saveAs);
     void newDocument();
     void openDocument();
+    void importSvg();
     void exportSvg();
     void exportPdf();
     void exportPng();
+    void exportImage(const QString &format);
+    void exportPrintPdf();
+    void configurePrintSettings();
+    void preflightDocument();
+    void batchExport();
     void copySelection();
     void pasteSelection();
     void duplicateSelection();
@@ -89,6 +95,8 @@ private:
     void chooseFillColor();
     void chooseStrokeColor();
     void renderForExport(QPainter *painter, const QRectF &target);
+    void renderPrintOutput(QPainter *painter, const QRectF &target);
+    void drawCropMarks(QPainter *painter, const QRectF &target, const QRectF &source);
 
     CanvasView *m_canvas = nullptr;
     QListWidget *m_objectList = nullptr;
@@ -127,4 +135,6 @@ private:
     QColor m_fillColor {244, 197, 66};
     QColor m_strokeColor {34, 34, 34};
     QColor m_secondFillColor {235, 75, 75};
+    qreal m_bleedMm = 3.0;
+    bool m_cropMarks = true;
 };
