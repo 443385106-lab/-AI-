@@ -21,6 +21,10 @@ qt_add_executable(JiangxinVectorStudio WIN32
     src/DocumentIO.cpp
 )
 
+if(WIN32)
+    target_sources(JiangxinVectorStudio PRIVATE windows/app.rc)
+endif()
+
 target_link_libraries(JiangxinVectorStudio PRIVATE
     Qt6::Widgets
     Qt6::Svg
@@ -39,4 +43,3 @@ else()
 endif()
 
 install(TARGETS JiangxinVectorStudio RUNTIME DESTINATION bin)
-
