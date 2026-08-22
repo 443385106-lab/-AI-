@@ -1,4 +1,4 @@
-# AI制度展板生成工具 0.8（CorelDRAW 2020专业联动版）
+# AI制度展板生成工具 0.9（CorelDRAW式矢量设计工作区）
 
 软件品牌：**匠心图文**。Windows程序窗口、桌面快捷方式和安装包均使用项目内的红金“匠心图文”图标。
 
@@ -16,6 +16,9 @@ Windows 本地单机工具，适用于制度牌、操作规程、安全告知卡
 - CorelDRAW X7/2018/2019/2020自动兼容性检测
 - CorelDRAW 2020（64-Bit）专业联动：当前展板直接导入、文字转曲、均匀色与轮廓转CMYK、印前预检、另存CDR、300dpi CMYK印刷PDF
 - CorelDRAW原生编辑衔接：贝塞尔与节点、焊接/修剪/相交、封套/阴影/轮廓/调和、PowerTRACE、图框精确剪裁、图层/符号、批注审阅和字体管理
+- CorelDRAW式工作区：顶部菜单与属性栏、左侧绘图工具、中央标尺画布、右侧对象图层、底部颜色条和状态栏
+- 本地矢量编辑：选择、多选、移动、缩放、旋转、节点调整、矩形、椭圆、直线、手绘路径、文字、吸管、层级、对齐、组合、锁定、填充和轮廓
+- 网格、智能吸附、25%—200%缩放、快捷键、撤销重做；自绘对象随SVG/CDR/PDF/高清图一起导出
 - Windows NSIS安装包配置和一键构建脚本
 
 ## Windows运行源码
@@ -35,7 +38,7 @@ OCR首次识别时需要取得Tesseract中文语言数据，之后由本机缓�
 powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
 ```
 
-完成后安装程序位于 `dist/ZhiduBoardStudio-0.8.0-Setup.exe`。
+完成后安装程序位于 `dist/ZhiduBoardStudio-0.9.0-Setup.exe`。
 
 项目同时包含 `.github/workflows/build-windows.yml`，推送到GitHub的 `main` 分支后会在Windows构建机自动生成安装包，并作为 `ZhiduBoardStudio-Windows-Setup` 构建产物提供下载。
 
