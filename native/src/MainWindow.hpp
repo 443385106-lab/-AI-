@@ -100,6 +100,12 @@ private:
     void applyInspector();
     void editSelectedText();
     void autoFitSelectedText();
+    void fitTextFrameToContent();
+    void importLongPolicyText();
+    void applyHierarchicalTextStyles();
+    void applyAutomaticNumbering();
+    void unifyDocumentTextFormat();
+    void convertTextToCurves(bool allText);
     void chooseSecondFillColor();
     QBrush selectedFillBrush(const QRectF &bounds) const;
     void applyQuickColor(const QColor &color);

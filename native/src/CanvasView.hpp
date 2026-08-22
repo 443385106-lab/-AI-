@@ -1,12 +1,15 @@
 #pragma once
 
 #include <QColor>
+#include <QFont>
 #include <QGraphicsView>
 #include <QList>
 #include <QPainterPath>
 
 class QGraphicsItem;
 class QGraphicsPathItem;
+class QGraphicsRectItem;
+class QGraphicsTextItem;
 
 class CanvasView final : public QGraphicsView
 {
@@ -34,6 +37,8 @@ public:
     void deleteSelection();
     void selectAllObjects();
     void notifyDocumentChanged();
+    void refreshTextFrameHandles();
+    void clearTextFrameOverlays();
 
 Q_SIGNALS:
     void documentCommitted(const QString &reason);
@@ -58,6 +63,9 @@ private:
     void finishBezier(bool closePath, bool commit = true);
     void rebuildNodeHandles();
     void clearNodeHandles();
+    void rebuildTextFrameHandles();
+    void clearTextFrameHandles();
+    void resizeTextFrame(const QPointF &scenePoint, Qt::KeyboardModifiers modifiers);
 
     Tool m_tool = Tool::Select;
     QRectF m_pageRect {100.0, 100.0, 800.0, 600.0};
@@ -77,4 +85,11 @@ private:
     QPainterPath m_bezierPath;
     int m_bezierAnchorCount = 0;
     QList<QGraphicsItem *> m_nodeHandles;
+    QList<QGraphicsRectItem *> m_textFrameHandles;
+    QGraphicsRectItem *m_textFrameOutline = nullptr;
+    QGraphicsTextItem *m_resizingText = nullptr;
+    int m_resizeHandle = -1;
+    QRectF m_originalTextFrame;
+    QPointF m_resizeStartPoint;
+    QFont m_originalTextFont;
 };

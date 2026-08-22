@@ -161,7 +161,7 @@ QJsonObject serializeOne(QGraphicsItem *item)
         if (kind == "clip") json["children"] = DocumentIO::serializeItems(item->childItems());
     } else if (kind == "text") {
         const auto *text = static_cast<QGraphicsTextItem *>(item);
-        json["text"] = text->toPlainText(); json["color"] = text->defaultTextColor().name(QColor::HexArgb);
+        json["text"] = text->toPlainText(); json["html"] = text->toHtml(); json["color"] = text->defaultTextColor().name(QColor::HexArgb);
         json["font"] = QJsonObject {{"family", text->font().family()}, {"size", text->font().pointSizeF()},
                                      {"bold", text->font().bold()}, {"italic", text->font().italic()}};
         json["textWidth"] = text->textWidth(); json["textBoxHeight"] = item->data(TextBoxHeightRole).toDouble(); json["paragraph"] = item->data(ParagraphRole).toBool(); json["alignment"] = static_cast<int>(text->document()->defaultTextOption().alignment());
@@ -216,7 +216,7 @@ QGraphicsItem *restoreOne(QGraphicsScene *scene, const QJsonObject &json, const 
         if (!json.contains("brush")) brush.setStyle(static_cast<Qt::BrushStyle>(json["fillStyle"].toInt(static_cast<int>(Qt::NoBrush))));
         shape->setBrush(brush); item = shape;
     } else if (kind == "text") {
-        auto *text = new QGraphicsTextItem(json["text"].toString()); const QJsonObject f = json["font"].toObject();
+        auto *text = new QGraphicsTextItem; if (json.contains("html")) text->setHtml(json["html"].toString()); else text->setPlainText(json["text"].toString()); const QJsonObject f = json["font"].toObject();
         QFont font(f["family"].toString("Microsoft YaHei")); font.setPointSizeF(f["size"].toDouble(24.0)); font.setBold(f["bold"].toBool()); font.setItalic(f["italic"].toBool());
         text->setFont(font); text->setDefaultTextColor(QColor(json["color"].toString("#ff222222"))); text->setTextWidth(json["textWidth"].toDouble(-1.0)); QTextOption option = text->document()->defaultTextOption(); option.setAlignment(static_cast<Qt::AlignmentFlag>(json["alignment"].toInt(static_cast<int>(Qt::AlignLeft)))); text->document()->setDefaultTextOption(option); text->setData(TextBoxHeightRole, json["textBoxHeight"].toDouble()); text->setData(ParagraphRole, json["paragraph"].toBool()); item = text;
     } else if (kind == "group") {
@@ -240,7 +240,7 @@ QJsonObject DocumentIO::serializeDocument(QGraphicsScene *scene, const QRectF &p
 {
     QList<QGraphicsItem *> roots;
     for (QGraphicsItem *item : scene->items(Qt::AscendingOrder)) if (!item->parentItem()) roots.append(item);
-    return {{"format", "JiangxinVectorDocument"}, {"version", 5}, {"page", rectToJson(pageRect)},
+    return {{"format", "JiangxinVectorDocument"}, {"version", 6}, {"page", rectToJson(pageRect)},
             {"items", serializeItems(roots)}};
 }
 

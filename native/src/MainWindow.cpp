@@ -33,6 +33,7 @@
 #include <QGraphicsScene>
 #include <QGraphicsTextItem>
 #include <QGraphicsSvgItem>
+#include <QGlyphRun>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHash>
@@ -55,6 +56,7 @@
 #include <QProgressDialog>
 #include <QProcess>
 #include <QPlainTextEdit>
+#include <QRawFont>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QSet>
@@ -66,8 +68,11 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QTextBlockFormat>
+#include <QTextBlock>
+#include <QTextCharFormat>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextLayout>
 #include <QTextOption>
 #include <QVBoxLayout>
 #include <algorithm>
@@ -121,6 +126,26 @@ QString colorButtonStyle(const QColor &color)
     return QStringLiteral("QToolButton{background:%1;border:1px solid #8f969e;min-width:30px;}").arg(color.name());
 }
 
+QPainterPath textDocumentPath(QGraphicsTextItem *text)
+{
+    QPainterPath path; QTextDocument *document = text->document();
+    for (QTextBlock block = document->begin(); block.isValid(); block = block.next()) {
+        QTextLayout *layout = block.layout(); if (!layout) continue;
+        for (int lineIndex = 0; lineIndex < layout->lineCount(); ++lineIndex) {
+            const QTextLine line = layout->lineAt(lineIndex);
+            for (const QGlyphRun &run : line.glyphRuns()) {
+                const QRawFont rawFont = run.rawFont(); const auto glyphs = run.glyphIndexes(); const auto positions = run.positions();
+                const int count = qMin(glyphs.size(), positions.size());
+                for (int index = 0; index < count; ++index) {
+                    QPainterPath glyph = rawFont.pathForGlyph(glyphs[index]);
+                    const QPointF origin = layout->position() + positions[index]; glyph.translate(origin.x(), origin.y()); path.addPath(glyph);
+                }
+            }
+        }
+    }
+    return path;
+}
+
 QPainterPath localItemPath(QGraphicsItem *item)
 {
     if (auto *rect = dynamic_cast<QGraphicsRectItem *>(item)) {
@@ -134,9 +159,7 @@ QPainterPath localItemPath(QGraphicsItem *item)
         QPainterPath path; path.moveTo(line->line().p1()); path.lineTo(line->line().p2());
         QPainterPathStroker stroker; stroker.setWidth(qMax(1.0, line->pen().widthF())); return stroker.createStroke(path);
     }
-    if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) {
-        QPainterPath path; path.addText(QPointF(0.0, text->font().pointSizeF()), text->font(), text->toPlainText()); return path;
-    }
+    if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) return textDocumentPath(text);
     if (auto *bitmap = dynamic_cast<QGraphicsPixmapItem *>(item)) {
         QPainterPath path; path.addRect(bitmap->boundingRect()); return path;
     }
@@ -830,11 +853,21 @@ void MainWindow::buildMenus()
     auto *textMenu = menuBar()->addMenu(QStringLiteral("文字(&T)"));
     textMenu->addAction(QStringLiteral("添加美术字"), this, [this] { setCurrentTool(CanvasView::Tool::Text); });
     textMenu->addAction(QStringLiteral("添加段落文本"), this, [this] { setCurrentTool(CanvasView::Tool::ParagraphText); });
+    textMenu->addAction(QStringLiteral("导入大段制度文字…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_T), this, &MainWindow::importLongPolicyText);
+    textMenu->addSeparator();
     textMenu->addAction(QStringLiteral("编辑文字内容…"), this, &MainWindow::editSelectedText);
     textMenu->addAction(QStringLiteral("文本框自动缩字"), this, &MainWindow::autoFitSelectedText);
+    textMenu->addAction(QStringLiteral("文本框贴合内容高度"), this, &MainWindow::fitTextFrameToContent);
+    textMenu->addSeparator();
+    textMenu->addAction(QStringLiteral("自动识别并应用层级样式…"), this, &MainWindow::applyHierarchicalTextStyles);
+    textMenu->addAction(QStringLiteral("生成多级条款编号…"), this, &MainWindow::applyAutomaticNumbering);
+    textMenu->addAction(QStringLiteral("全板文字统一格式…"), this, &MainWindow::unifyDocumentTextFormat);
+    textMenu->addSeparator();
+    textMenu->addAction(QStringLiteral("选中文字安全转曲"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Q), this, [this] { convertTextToCurves(false); });
+    textMenu->addAction(QStringLiteral("全板文字安全转曲…"), this, [this] { convertTextToCurves(true); });
     auto *helpMenu = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
     helpMenu->addAction(QStringLiteral("关于匠心矢量设计"), this, [this] {
-        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.9 Native\n第十阶段：品牌资料、LOGO与品牌色一键套用、全局文字替换及批量工程套版。\n不包含任何CorelDRAW专有代码或文件规范。"));
+        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.10 Native\n第十一阶段：专业段落文本框、溢出适配、层级样式、多级编号、全板统一格式和安全文字转曲。\n不包含任何CorelDRAW专有代码或文件规范。"));
     });
 }
 
@@ -971,6 +1004,9 @@ void MainWindow::buildDockers()
     connect(svgButton, &QPushButton::clicked, this, &MainWindow::exportSvg); connect(pdfButton, &QPushButton::clicked, this, &MainWindow::exportPdf); connect(pngButton, &QPushButton::clicked, this, &MainWindow::exportPng);
     connect(smartButton, &QPushButton::clicked, this, &MainWindow::generateSmartBoard); connect(sampleButton, &QPushButton::clicked, this, &MainWindow::analyzeSampleLayout); connect(ocrButton, &QPushButton::clicked, this, &MainWindow::ocrSampleImage); connect(templateButton, &QPushButton::clicked, this, &MainWindow::openTemplateLibrary); connect(brandButton, &QPushButton::clicked, this, &MainWindow::applyBrandProfile); connect(printButton, &QPushButton::clicked, this, [this] { preflightDocument(); exportPrintPdf(); }); connect(batchButton, &QPushButton::clicked, this, &MainWindow::batchGenerateBoards);
     productionDock->setWidget(panel); addDockWidget(Qt::RightDockWidgetArea, productionDock); tabifyDockWidget(objectsDock, productionDock); objectsDock->raise();
+
+    auto *textDock = new QDockWidget(QStringLiteral("专业文字排版"), this); auto *textPanel = new QWidget; auto *textLayout = new QVBoxLayout(textPanel); auto *importTextButton = new QPushButton(QStringLiteral("导入大段制度文字")); auto *fitTextButton = new QPushButton(QStringLiteral("一键缩字适配文本框")); auto *frameTextButton = new QPushButton(QStringLiteral("文本框贴合内容高度")); auto *styleTextButton = new QPushButton(QStringLiteral("自动区分标题/条款/备注")); auto *numberTextButton = new QPushButton(QStringLiteral("生成多级条款编号")); auto *unifyTextButton = new QPushButton(QStringLiteral("全板文字统一格式")); auto *curveTextButton = new QPushButton(QStringLiteral("选中文字安全转曲")); auto *tip = new QLabel(QStringLiteral("选中段落文本后拖动蓝色控制点调整文本框。\nShift：保持比例　Ctrl：文字同步缩放\n红色边框：文字存在溢出")); tip->setWordWrap(true); tip->setStyleSheet(QStringLiteral("QLabel{background:#eef6ff;border:1px solid #b9d8f5;padding:8px;color:#24445f;}")); textLayout->addWidget(tip); for (QPushButton *button : {importTextButton, fitTextButton, frameTextButton, styleTextButton, numberTextButton, unifyTextButton, curveTextButton}) textLayout->addWidget(button); textLayout->addStretch();
+    connect(importTextButton, &QPushButton::clicked, this, &MainWindow::importLongPolicyText); connect(fitTextButton, &QPushButton::clicked, this, &MainWindow::autoFitSelectedText); connect(frameTextButton, &QPushButton::clicked, this, &MainWindow::fitTextFrameToContent); connect(styleTextButton, &QPushButton::clicked, this, &MainWindow::applyHierarchicalTextStyles); connect(numberTextButton, &QPushButton::clicked, this, &MainWindow::applyAutomaticNumbering); connect(unifyTextButton, &QPushButton::clicked, this, &MainWindow::unifyDocumentTextFormat); connect(curveTextButton, &QPushButton::clicked, this, [this] { convertTextToCurves(false); }); textDock->setWidget(textPanel); addDockWidget(Qt::RightDockWidgetArea, textDock); tabifyDockWidget(objectsDock, textDock);
 }
 
 void MainWindow::connectSignals()
@@ -1059,13 +1095,13 @@ void MainWindow::recordHistory(const QString &)
 void MainWindow::restoreHistory(int index)
 {
     if (index < 0 || index >= m_history.size()) return; m_restoring = true; QRectF page; QString error;
-    if (DocumentIO::restoreDocument(m_canvas->scene(), m_history[index], &page, &error)) { m_canvas->setPageRect(page); m_historyIndex = index; m_modified = true; applyLayerState(); updateWindowTitle(); setStatus(QStringLiteral("历史记录已恢复")); }
+    m_canvas->clearTextFrameOverlays(); if (DocumentIO::restoreDocument(m_canvas->scene(), m_history[index], &page, &error)) { m_canvas->setPageRect(page); m_historyIndex = index; m_modified = true; applyLayerState(); updateWindowTitle(); setStatus(QStringLiteral("历史记录已恢复")); }
     m_restoring = false;
 }
 
 void MainWindow::newDocument()
 {
-    if (!maybeSave()) return; m_restoring = true; m_canvas->scene()->clear(); m_canvas->setPageRect({100, 100, 800, 600}); m_fileName.clear(); m_modified = false; m_history.clear(); m_historyIndex = -1; m_currentLayer = QStringLiteral("图层 1"); m_canvas->setActiveLayer(m_currentLayer); m_restoring = false;
+    if (!maybeSave()) return; m_restoring = true; m_canvas->clearTextFrameOverlays(); m_canvas->scene()->clear(); m_canvas->setPageRect({100, 100, 800, 600}); m_fileName.clear(); m_modified = false; m_history.clear(); m_historyIndex = -1; m_currentLayer = QStringLiteral("图层 1"); m_canvas->setActiveLayer(m_currentLayer); m_restoring = false;
     recordHistory(QStringLiteral("新建文档")); setCurrentTool(CanvasView::Tool::Select); m_canvas->zoomToFit(); updateObjectList(); updateWindowTitle(); setStatus(QStringLiteral("已新建800×600页面"));
 }
 
@@ -1086,7 +1122,7 @@ bool MainWindow::saveDocument(bool saveAs)
 void MainWindow::openDocument()
 {
     if (!maybeSave()) return; const QString fileName = QFileDialog::getOpenFileName(this, QStringLiteral("打开匠心矢量文档"), {}, QStringLiteral("匠心矢量文档 (*.jxv)")); if (fileName.isEmpty()) return;
-    QString error; const QJsonObject document = DocumentIO::loadFile(fileName, &error); QRectF page; if (document.isEmpty() || !DocumentIO::restoreDocument(m_canvas->scene(), document, &page, &error)) { QMessageBox::critical(this, QStringLiteral("打开失败"), error); return; }
+    QString error; const QJsonObject document = DocumentIO::loadFile(fileName, &error); QRectF page; m_canvas->clearTextFrameOverlays(); if (document.isEmpty() || !DocumentIO::restoreDocument(m_canvas->scene(), document, &page, &error)) { QMessageBox::critical(this, QStringLiteral("打开失败"), error); return; }
     m_canvas->setPageRect(page); m_fileName = fileName; m_modified = false; m_history.clear(); m_historyIndex = -1; recordHistory(QStringLiteral("打开文档")); m_canvas->zoomToFit(); applyLayerState(); updateWindowTitle();
 }
 
@@ -1119,7 +1155,7 @@ void MainWindow::generateSmartBoard()
     if (dialog.exec() != QDialog::Accepted) return; const QString title = titleEdit->text().trimmed(); if (title.isEmpty()) { QMessageBox::warning(this, QStringLiteral("缺少名称"), QStringLiteral("请输入制度名称")); return; }
     QString body = bodyEdit->toPlainText().trimmed(); if (body.isEmpty() && localContent->isChecked()) body = policyBodyForTitle(title); if (body.isEmpty()) { QMessageBox::warning(this, QStringLiteral("缺少正文"), QStringLiteral("请输入正文，或启用本地内容生成")); return; }
     if (!maybeSave()) return; const QList<BoardTheme> themes = boardThemes(); const QSizeF sizeMm = boardSizeMillimeters(sizeCombo->currentText()); const QRectF page(100, 100, sizeMm.width() * 10.0, sizeMm.height() * 10.0);
-    m_restoring = true; m_canvas->scene()->clear(); m_canvas->setPageRect(page); m_fileName.clear(); m_history.clear(); m_historyIndex = -1; m_currentLayer = QStringLiteral("智能展板"); m_canvas->setActiveLayer(m_currentLayer);
+    m_restoring = true; m_canvas->clearTextFrameOverlays(); m_canvas->scene()->clear(); m_canvas->setPageRect(page); m_fileName.clear(); m_history.clear(); m_historyIndex = -1; m_currentLayer = QStringLiteral("智能展板"); m_canvas->setActiveLayer(m_currentLayer);
     addBoardDesign(m_canvas->scene(), page, title, body, footerEdit->text(), themes.value(themeCombo->currentIndex(), themes.first()));
     m_restoring = false; m_modified = true; recordHistory(QStringLiteral("智能生成制度展板")); m_canvas->zoomToFit(); updateObjectList(); updateWindowTitle(); setStatus(QStringLiteral("制度展板已自动生成：") + title);
 }
@@ -1168,6 +1204,7 @@ void MainWindow::ocrSampleImage()
     layout.addRow(summary); layout.addRow(QStringLiteral("识别标题"), titleEdit); layout.addRow(QStringLiteral("识别正文"), bodyEdit); layout.addRow(QStringLiteral("落款"), footerEdit); layout.addRow(QStringLiteral("生成方式"), modeCombo); layout.addRow(QStringLiteral("分栏数量"), columnCombo); layout.addRow(QStringLiteral("成品尺寸"), sizeCombo);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("生成可编辑矢量版式")); buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消")); layout.addRow(buttons); connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) return; const QString title = titleEdit->text().trimmed(); const QString body = bodyEdit->toPlainText().trimmed(); if (title.isEmpty()) { QMessageBox::warning(this, QStringLiteral("缺少标题"), QStringLiteral("请校对并填写制度标题")); return; } if (!maybeSave()) return;
+    m_canvas->clearTextFrameOverlays();
     const QSizeF sizeMm = boardSizeMillimeters(sizeCombo->currentText()); const QRectF page(100, 100, sizeMm.width() * 10.0, sizeMm.height() * 10.0); m_restoring = true; m_canvas->scene()->clear(); m_canvas->setPageRect(page); m_fileName.clear(); m_history.clear(); m_historyIndex = -1; m_currentLayer = QStringLiteral("OCR结构重建"); m_canvas->setActiveLayer(m_currentLayer); OcrLayoutAnalysis chosenLayout = detectedLayout;
     if (columnCombo->currentIndex() > 0) { chosenLayout.columns = columnCombo->currentIndex(); chosenLayout.columnCenters.clear(); const qreal width = qMax(1.0, ocr["width"].toDouble(1.0)); for (int column = 0; column < chosenLayout.columns; ++column) chosenLayout.columnCenters.append(width * (column + 0.5) / chosenLayout.columns); }
     const QString finalBody = body.isEmpty() ? policyBodyForTitle(title) : body; if (modeCombo->currentIndex() == 0) { if (chosenLayout.isTable()) addTableOcrDesign(m_canvas->scene(), page, ocr, chosenLayout, title, finalBody, footerEdit->text(), theme, headerRatio, marginRatio); else addStructuredOcrDesign(m_canvas->scene(), page, ocr, chosenLayout, title, finalBody, footerEdit->text(), theme, headerRatio, marginRatio); }
@@ -1193,6 +1230,7 @@ void MainWindow::analyzeSampleLayout()
     layout.addRow(preview); layout.addRow(analysis); layout.addRow(QStringLiteral("制度名称"), titleEdit); layout.addRow(QStringLiteral("正文内容"), bodyEdit); layout.addRow(QStringLiteral("落款"), footerEdit); layout.addRow(QStringLiteral("成品尺寸"), sizeCombo); layout.addRow(logoBox);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("生成可编辑版式")); buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消")); layout.addRow(buttons); connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) return; const QString title = titleEdit->text().trimmed(); if (title.isEmpty()) { QMessageBox::warning(this, QStringLiteral("缺少名称"), QStringLiteral("请输入制度名称")); return; } QString body = bodyEdit->toPlainText().trimmed(); if (body.isEmpty()) body = policyBodyForTitle(title); if (!maybeSave()) return;
+    m_canvas->clearTextFrameOverlays();
     const QSizeF sizeMm = boardSizeMillimeters(sizeCombo->currentText()); const QRectF page(100, 100, sizeMm.width() * 10.0, sizeMm.height() * 10.0); m_restoring = true; m_canvas->scene()->clear(); m_canvas->setPageRect(page); m_fileName.clear(); m_history.clear(); m_historyIndex = -1; m_currentLayer = QStringLiteral("样图仿制"); m_canvas->setActiveLayer(m_currentLayer); addBoardDesign(m_canvas->scene(), page, title, body, footerEdit->text(), theme, headerRatio, marginRatio);
     if (logoBox->isChecked()) { const qreal side = qMin(page.width(), page.height()) * 0.095; const qreal gap = qMin(page.width(), page.height()) * marginRatio * 1.2; auto *logo = new QGraphicsRectItem(QRectF(page.left() + gap, page.top() + gap, side, side)); QPen pen(theme.accent.darker(130), qMax(4.0, side * 0.018), Qt::DashLine); logo->setPen(pen); logo->setBrush(QColor(255, 255, 255, 205)); prepareBoardItem(logo, QStringLiteral("rectangle"), QStringLiteral("LOGO占位框"), m_canvas->scene(), 5.0); auto *label = new QGraphicsTextItem(QStringLiteral("LOGO")); QFont font(QStringLiteral("Arial")); font.setBold(true); font.setPointSizeF(side * 0.09); label->setFont(font); label->setDefaultTextColor(theme.primary); label->setTextWidth(side); QTextOption option = label->document()->defaultTextOption(); option.setAlignment(Qt::AlignCenter); label->document()->setDefaultTextOption(option); label->setPos(logo->rect().left(), logo->rect().center().y() - label->boundingRect().height() / 2.0); prepareBoardItem(label, QStringLiteral("text"), QStringLiteral("LOGO占位文字"), m_canvas->scene(), 6.0); }
     m_restoring = false; m_modified = true; recordHistory(QStringLiteral("样图版式分析生成")); m_canvas->zoomToFit(); updateObjectList(); updateWindowTitle(); setStatus(QStringLiteral("样图版式已分析并生成可编辑对象"));
@@ -1891,7 +1929,86 @@ void MainWindow::autoFitSelectedText()
         while (text->boundingRect().height() > maximumHeight && size > 6.0) { size -= 0.5; font.setPointSizeF(size); text->setFont(font); }
         changed = true;
     }
-    if (changed) markModified(QStringLiteral("文本溢出检测完成，字号已自动适配")); else setStatus(QStringLiteral("请先选择段落文本"));
+    if (changed) { m_canvas->refreshTextFrameHandles(); markModified(QStringLiteral("文本溢出检测完成，字号已自动适配")); } else setStatus(QStringLiteral("请先选择段落文本"));
+}
+
+void MainWindow::fitTextFrameToContent()
+{
+    int changed = 0;
+    for (QGraphicsItem *item : m_canvas->scene()->selectedItems()) if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) {
+        if (text->textWidth() <= 0.0) text->setTextWidth(qMax(120.0, text->boundingRect().width()));
+        text->document()->adjustSize(); const qreal height = qMax(30.0, text->boundingRect().height() + text->document()->documentMargin());
+        text->setData(TextBoxHeightRole, height); text->setData(ParagraphRole, true); ++changed;
+    }
+    if (changed > 0) { m_canvas->refreshTextFrameHandles(); markModified(QStringLiteral("文本框已贴合内容高度")); } else setStatus(QStringLiteral("请先选择文字对象"));
+}
+
+void MainWindow::importLongPolicyText()
+{
+    QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("导入大段制度文字")); dialog.resize(720, 620); QVBoxLayout layout(&dialog);
+    auto *hint = new QLabel(QStringLiteral("可粘贴多条款制度正文，或读取本地 TXT 文件。导入后生成可自由调整的段落文本框。")); hint->setWordWrap(true); layout.addWidget(hint);
+    auto *editor = new QPlainTextEdit; editor->setPlaceholderText(QStringLiteral("在这里粘贴制度正文……")); layout.addWidget(editor, 1);
+    auto *settings = new QHBoxLayout; auto *loadButton = new QPushButton(QStringLiteral("读取TXT…")); auto *width = new QDoubleSpinBox; width->setRange(200.0, 100000.0); width->setValue(m_canvas->pageRect().width() * 0.78); width->setPrefix(QStringLiteral("宽度 ")); auto *height = new QDoubleSpinBox; height->setRange(100.0, 100000.0); height->setValue(m_canvas->pageRect().height() * 0.72); height->setPrefix(QStringLiteral("高度 ")); auto *fontSize = new QDoubleSpinBox; fontSize->setRange(6.0, 300.0); fontSize->setValue(qMax(18.0, qMin(m_canvas->pageRect().width(), m_canvas->pageRect().height()) * 0.017)); fontSize->setPrefix(QStringLiteral("字号 ")); settings->addWidget(loadButton); settings->addStretch(); settings->addWidget(width); settings->addWidget(height); settings->addWidget(fontSize); layout.addLayout(settings);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("生成段落文本框")); buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消")); layout.addWidget(buttons);
+    connect(loadButton, &QPushButton::clicked, &dialog, [&] { const QString fileName = QFileDialog::getOpenFileName(&dialog, QStringLiteral("读取制度文字"), {}, QStringLiteral("文本文件 (*.txt);;所有文件 (*.*)")); if (fileName.isEmpty()) return; QFile file(fileName); if (file.open(QIODevice::ReadOnly | QIODevice::Text)) editor->setPlainText(QString::fromUtf8(file.readAll())); else QMessageBox::warning(&dialog, QStringLiteral("读取失败"), file.errorString()); });
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+    QStringList normalized; bool previousBlank = false; for (QString line : editor->toPlainText().replace(QStringLiteral("\r\n"), QStringLiteral("\n")).split('\n')) { line = line.trimmed(); const bool blank = line.isEmpty(); if (blank && previousBlank) continue; normalized.append(line); previousBlank = blank; }
+    while (!normalized.isEmpty() && normalized.last().isEmpty()) normalized.removeLast(); const QString content = normalized.join('\n'); if (content.isEmpty()) return;
+    auto *text = new QGraphicsTextItem(content); QFont font(QStringLiteral("Microsoft YaHei")); font.setPointSizeF(fontSize->value()); text->setFont(font); text->setDefaultTextColor(QColor(QStringLiteral("#20252A"))); text->setTextWidth(width->value()); text->setData(TextBoxHeightRole, height->value()); text->setData(ParagraphRole, true); text->document()->setDocumentMargin(0);
+    QTextOption option = text->document()->defaultTextOption(); option.setAlignment(Qt::AlignJustify); option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere); text->document()->setDefaultTextOption(option); QTextCursor cursor(text->document()); cursor.select(QTextCursor::Document); QTextBlockFormat block; block.setLineHeight(145.0, QTextBlockFormat::ProportionalHeight); block.setBottomMargin(fontSize->value() * 0.28); cursor.mergeBlockFormat(block);
+    const QRectF page = m_canvas->pageRect(); text->setPos(page.left() + (page.width() - width->value()) / 2.0, page.top() + (page.height() - height->value()) / 2.0); text->setData(KindRole, QStringLiteral("text")); text->setData(NameRole, QStringLiteral("导入制度正文")); text->setData(LayerRole, m_currentLayer); text->setData(VisibleRole, true); text->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable); m_canvas->scene()->clearSelection(); m_canvas->scene()->addItem(text); text->setSelected(true);
+    m_canvas->refreshTextFrameHandles(); markModified(QStringLiteral("已导入大段制度文字并生成自适应文本框"));
+}
+
+void MainWindow::applyHierarchicalTextStyles()
+{
+    QList<QGraphicsTextItem *> targets; for (QGraphicsItem *item : m_canvas->scene()->selectedItems()) if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) targets.append(text);
+    QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("制度文字层级样式")); QFormLayout layout(&dialog); auto *wholeBoard = new QCheckBox(QStringLiteral("应用到全板所有文字对象")); wholeBoard->setChecked(targets.isEmpty()); auto *family = new QFontComboBox; family->setCurrentFont(m_fontCombo->currentFont()); const qreal base = !targets.isEmpty() ? qMax(8.0, targets.first()->font().pointSizeF()) : m_fontSizeSpin->value();
+    auto makeSize = [&](qreal value) { auto *spin = new QDoubleSpinBox; spin->setRange(6.0, 500.0); spin->setValue(value); return spin; }; auto *titleSize = makeSize(base * 1.7); auto *levelOneSize = makeSize(base * 1.16); auto *bodySize = makeSize(base); auto *noteSize = makeSize(base * 0.84); auto *lineHeight = makeSize(145.0); lineHeight->setRange(80.0, 300.0); lineHeight->setSuffix(QStringLiteral(" %")); auto *paragraphSpace = makeSize(base * 0.30); paragraphSpace->setRange(0.0, 500.0);
+    layout.addRow(wholeBoard); layout.addRow(QStringLiteral("统一字体"), family); layout.addRow(QStringLiteral("标题字号"), titleSize); layout.addRow(QStringLiteral("一级条款字号"), levelOneSize); layout.addRow(QStringLiteral("正文/二级细则字号"), bodySize); layout.addRow(QStringLiteral("备注字号"), noteSize); layout.addRow(QStringLiteral("行距"), lineHeight); layout.addRow(QStringLiteral("段后距"), paragraphSpace); auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("自动识别并应用")); layout.addRow(buttons); connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject); if (dialog.exec() != QDialog::Accepted) return;
+    if (wholeBoard->isChecked()) { targets.clear(); for (QGraphicsItem *item : m_canvas->scene()->items()) if (!item->parentItem()) if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) targets.append(text); }
+    if (targets.isEmpty()) { setStatus(QStringLiteral("没有可排版的文字对象")); return; }
+    const BrandProfile brand = loadBrandProfile(); const QRegularExpression levelOne(QStringLiteral("^(第[一二三四五六七八九十百0-9]+条|[一二三四五六七八九十]+、|[0-9]+[、.．])")); const QRegularExpression levelTwo(QStringLiteral("^(（[0-9一二三四五六七八九十]+）|\\([0-9]+\\)|[①②③④⑤⑥⑦⑧⑨⑩])"));
+    for (QGraphicsTextItem *text : targets) {
+        const bool titleObject = text->data(NameRole).toString().contains(QStringLiteral("标题"));
+        for (QTextBlock current = text->document()->begin(); current.isValid(); current = current.next()) {
+            const QString value = current.text().trimmed(); if (value.isEmpty()) continue; enum Style { Title, LevelOne, Body, Note } style = Body; if (titleObject) style = Title; else if (value.startsWith(QStringLiteral("备注")) || value.startsWith(QStringLiteral("说明")) || value.startsWith(QStringLiteral("注：")) || value.startsWith(QStringLiteral("注意"))) style = Note; else if (levelOne.match(value).hasMatch()) style = LevelOne; else if (levelTwo.match(value).hasMatch()) style = Body;
+            QTextCursor cursor(current); cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor); QTextCharFormat chars; chars.setFontFamily(family->currentFont().family()); chars.setFontPointSize(style == Title ? titleSize->value() : style == LevelOne ? levelOneSize->value() : style == Note ? noteSize->value() : bodySize->value()); chars.setFontWeight(style == Title || style == LevelOne ? QFont::Bold : QFont::Normal); chars.setForeground(style == Title || style == LevelOne ? brand.primary : style == Note ? QColor(QStringLiteral("#626A72")) : QColor(QStringLiteral("#20252A"))); cursor.mergeCharFormat(chars); QTextBlockFormat block = current.blockFormat(); block.setLineHeight(lineHeight->value(), QTextBlockFormat::ProportionalHeight); block.setBottomMargin(paragraphSpace->value()); cursor.setBlockFormat(block);
+        }
+        text->document()->adjustSize();
+    }
+    m_canvas->refreshTextFrameHandles(); markModified(QStringLiteral("已自动区分标题、条款、细则和备注样式"));
+}
+
+void MainWindow::applyAutomaticNumbering()
+{
+    QList<QGraphicsTextItem *> targets; for (QGraphicsItem *item : m_canvas->scene()->selectedItems()) if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) targets.append(text); if (targets.isEmpty()) { setStatus(QStringLiteral("请先选择需要编号的段落文本")); return; }
+    QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("自动项目符号与多级编号")); QFormLayout layout(&dialog); auto *style = new QComboBox; style->addItems({QStringLiteral("一、二、三"), QStringLiteral("1. 2. 3."), QStringLiteral("第1条、第2条"), QStringLiteral("1、2、3")}); auto *replaceExisting = new QCheckBox(QStringLiteral("清除已有条款编号后重新生成")); replaceExisting->setChecked(true); auto *indentSublevel = new QCheckBox(QStringLiteral("缩进/制表符开头的行使用（1）（2）子编号")); indentSublevel->setChecked(true); layout.addRow(QStringLiteral("一级编号"), style); layout.addRow(replaceExisting); layout.addRow(indentSublevel); auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("生成编号")); layout.addRow(buttons); connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject); if (dialog.exec() != QDialog::Accepted) return;
+    const QStringList chinese {QString(), QStringLiteral("一"), QStringLiteral("二"), QStringLiteral("三"), QStringLiteral("四"), QStringLiteral("五"), QStringLiteral("六"), QStringLiteral("七"), QStringLiteral("八"), QStringLiteral("九"), QStringLiteral("十"), QStringLiteral("十一"), QStringLiteral("十二"), QStringLiteral("十三"), QStringLiteral("十四"), QStringLiteral("十五"), QStringLiteral("十六"), QStringLiteral("十七"), QStringLiteral("十八"), QStringLiteral("十九"), QStringLiteral("二十")}; const QRegularExpression prefix(QStringLiteral("^(第[一二三四五六七八九十百0-9]+条[、.]?|[一二三四五六七八九十]+、|[0-9]+[、.．]|（[0-9一二三四五六七八九十]+）|\\([0-9]+\\))\\s*"));
+    for (QGraphicsTextItem *text : targets) { QStringList result; int root = 0, child = 0; for (QString line : text->toPlainText().split('\n')) { if (line.trimmed().isEmpty()) { result.append(QString()); continue; } const bool sublevel = indentSublevel->isChecked() && (line.startsWith('\t') || line.startsWith(QStringLiteral("　")) || line.startsWith(QStringLiteral("  "))); line = line.trimmed(); if (replaceExisting->isChecked()) line.remove(prefix); if (sublevel) { ++child; result.append(QStringLiteral("（%1）%2").arg(child).arg(line)); } else { ++root; child = 0; QString number; if (style->currentIndex() == 0) number = QStringLiteral("%1、").arg(root < chinese.size() ? chinese[root] : QString::number(root)); else if (style->currentIndex() == 1) number = QStringLiteral("%1. ").arg(root); else if (style->currentIndex() == 2) number = QStringLiteral("第%1条 ").arg(root); else number = QStringLiteral("%1、").arg(root); result.append(number + line); } } text->setPlainText(result.join('\n')); text->setData(ParagraphRole, true); }
+    m_canvas->refreshTextFrameHandles(); markModified(QStringLiteral("已生成规范多级条款编号"));
+}
+
+void MainWindow::unifyDocumentTextFormat()
+{
+    QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("全板文字统一格式")); QFormLayout layout(&dialog); auto *family = new QFontComboBox; family->setCurrentFont(m_fontCombo->currentFont()); auto *size = new QDoubleSpinBox; size->setRange(6.0, 500.0); size->setValue(m_fontSizeSpin->value()); auto *lineHeight = new QDoubleSpinBox; lineHeight->setRange(80.0, 300.0); lineHeight->setValue(145.0); lineHeight->setSuffix(QStringLiteral(" %")); auto *space = new QDoubleSpinBox; space->setRange(0.0, 500.0); space->setValue(size->value() * 0.25); auto *preserveTitles = new QCheckBox(QStringLiteral("保留标题字号和粗体，仅统一标题字体")); preserveTitles->setChecked(true); QColor color(QStringLiteral("#20252A")); auto *colorButton = new QPushButton(color.name().toUpper()); colorButton->setStyleSheet(QStringLiteral("background:%1;color:white;padding:6px;").arg(color.name())); layout.addRow(QStringLiteral("全板字体"), family); layout.addRow(QStringLiteral("正文字号"), size); layout.addRow(QStringLiteral("文字颜色"), colorButton); layout.addRow(QStringLiteral("统一行距"), lineHeight); layout.addRow(QStringLiteral("统一段后距"), space); layout.addRow(preserveTitles); auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("统一全板格式")); layout.addRow(buttons); connect(colorButton, &QPushButton::clicked, &dialog, [&] { const QColor selected = QColorDialog::getColor(color, &dialog, QStringLiteral("选择统一文字颜色")); if (selected.isValid()) { color = selected; colorButton->setText(color.name().toUpper()); colorButton->setStyleSheet(QStringLiteral("background:%1;color:%2;padding:6px;").arg(color.name(), color.lightness() < 145 ? QStringLiteral("white") : QStringLiteral("black"))); } }); connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject); if (dialog.exec() != QDialog::Accepted) return;
+    int changed = 0; for (QGraphicsItem *item : m_canvas->scene()->items()) if (!item->parentItem()) if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) { const bool title = text->data(NameRole).toString().contains(QStringLiteral("标题")); QTextCursor cursor(text->document()); cursor.select(QTextCursor::Document); QTextCharFormat chars; chars.setFontFamily(family->currentFont().family()); if (!(title && preserveTitles->isChecked())) { chars.setFontPointSize(size->value()); chars.setFontWeight(QFont::Normal); chars.setForeground(color); text->setDefaultTextColor(color); } cursor.mergeCharFormat(chars); for (QTextBlock block = text->document()->begin(); block.isValid(); block = block.next()) { QTextCursor blockCursor(block); QTextBlockFormat format = block.blockFormat(); format.setLineHeight(lineHeight->value(), QTextBlockFormat::ProportionalHeight); format.setBottomMargin(space->value()); blockCursor.setBlockFormat(format); } ++changed; }
+    m_canvas->refreshTextFrameHandles(); markModified(QStringLiteral("已统一%1个文字对象的字体与间距").arg(changed));
+}
+
+void MainWindow::convertTextToCurves(bool allText)
+{
+    QList<QGraphicsTextItem *> targets; if (allText) { for (QGraphicsItem *item : m_canvas->scene()->items()) if (!item->parentItem()) if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) targets.append(text); } else { for (QGraphicsItem *item : m_canvas->scene()->selectedItems()) if (!item->parentItem()) if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) targets.append(text); }
+    if (targets.isEmpty()) { setStatus(QStringLiteral("没有需要转曲的文字对象")); return; }
+    if (allText && QMessageBox::question(this, QStringLiteral("全板文字安全转曲"), QStringLiteral("将把全板 %1 个文字对象转换为矢量曲线。\n软件会同时保存隐藏的可编辑文字备份。是否继续？").arg(targets.size())) != QMessageBox::Yes) return;
+    m_canvas->clearTextFrameOverlays(); m_canvas->scene()->clearSelection(); int converted = 0;
+    for (QGraphicsTextItem *text : targets) {
+        const QJsonArray backupJson = DocumentIO::serializeItems({text}); const auto backups = DocumentIO::restoreItems(m_canvas->scene(), backupJson); for (QGraphicsItem *backup : backups) { backup->setData(NameRole, QStringLiteral("可编辑文字备份：") + text->data(NameRole).toString()); backup->setData(LayerRole, QStringLiteral("转曲备份（隐藏）")); backup->setData(VisibleRole, false); backup->setData(LockedRole, true); backup->setVisible(false); backup->setFlags(QGraphicsItem::ItemIsFocusable); }
+        const QPainterPath path = sceneItemPath(text); const QColor color = text->defaultTextColor(); const QString layer = text->data(LayerRole).toString().isEmpty() ? m_currentLayer : text->data(LayerRole).toString(); const QString name = text->data(NameRole).toString(); const qreal z = text->zValue(); m_canvas->scene()->removeItem(text); delete text;
+        auto *curve = new QGraphicsPathItem(path); curve->setPen(Qt::NoPen); curve->setBrush(color); curve->setZValue(z); curve->setData(KindRole, QStringLiteral("path")); curve->setData(NameRole, QStringLiteral("文字转曲：") + name); curve->setData(LayerRole, layer); curve->setData(VisibleRole, true); curve->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable); m_canvas->scene()->addItem(curve); curve->setSelected(true); ++converted;
+    }
+    markModified(QStringLiteral("已安全转曲%1个文字对象，并保留隐藏备份").arg(converted)); setCurrentTool(CanvasView::Tool::Node);
 }
 
 void MainWindow::applyQuickColor(const QColor &color)
@@ -1922,7 +2039,7 @@ void MainWindow::chooseSecondFillColor()
 
 void MainWindow::updateWindowTitle()
 {
-    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.9 Native").arg(m_modified ? "*" : "", name));
+    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.10 Native").arg(m_modified ? "*" : "", name));
 }
 
 void MainWindow::setStatus(const QString &message) { if (m_statusLabel) m_statusLabel->setText(message); }
