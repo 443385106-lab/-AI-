@@ -13,6 +13,7 @@ class QActionGroup;
 class QDoubleSpinBox;
 class QLabel;
 class QListWidget;
+class QComboBox;
 class QToolButton;
 
 class MainWindow final : public QMainWindow
@@ -54,8 +55,20 @@ private:
     void duplicateSelection();
     void groupSelection();
     void ungroupSelection();
+    void convertSelectionToPath();
+    void booleanSelection(int operation);
+    void transformSelection(int operation);
+    void clipSelection();
+    void releaseClip();
     void arrangeSelection(int direction);
     void alignSelection(Qt::Alignment alignment);
+    void distributeSelection(bool horizontal);
+    void updateLayerList();
+    void addLayer();
+    void renameLayer();
+    void toggleLayerVisible();
+    void toggleLayerLocked();
+    void applyLayerState();
     void applyInspector();
     void chooseFillColor();
     void chooseStrokeColor();
@@ -63,6 +76,7 @@ private:
 
     CanvasView *m_canvas = nullptr;
     QListWidget *m_objectList = nullptr;
+    QListWidget *m_layerList = nullptr;
     QLabel *m_selectionLabel = nullptr;
     QLabel *m_zoomLabel = nullptr;
     QLabel *m_cursorLabel = nullptr;
@@ -82,6 +96,7 @@ private:
     bool m_restoring = false;
     bool m_modified = false;
     QString m_fileName;
+    QString m_currentLayer = QStringLiteral("图层 1");
     QColor m_fillColor {244, 197, 66};
     QColor m_strokeColor {34, 34, 34};
 };
