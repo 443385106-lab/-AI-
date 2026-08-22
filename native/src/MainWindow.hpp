@@ -64,6 +64,13 @@ private:
     void transformSelection(int operation);
     void clipSelection();
     void releaseClip();
+    void addVectorShadow();
+    void createContour();
+    void createBlend();
+    void applyEnvelope(int preset);
+    void importBitmap();
+    void adjustBitmap(int operation);
+    void traceBitmap();
     void arrangeSelection(int direction);
     void alignSelection(Qt::Alignment alignment);
     void distributeSelection(bool horizontal);
