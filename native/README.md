@@ -1,0 +1,39 @@
+# 匠心矢量设计 1.0 Native
+
+自主开发的 Windows 原生矢量设计软件底座，兼容专业图文设计工作流程，但不包含 CorelDRAW 专有代码、界面素材或 CDR 文件解析规范。
+
+## 当前可用能力
+
+- Qt 6 / C++20 原生桌面界面，适配 Windows 10/11 64 位和高 DPI
+- 专业设计工作区：菜单、属性栏、左侧工具箱、标尺、无限工作区、页面、右侧对象图层、状态栏
+- 基础对象：矩形、椭圆、直线、自由手绘路径、美术字
+- 对象操作：选择、多选、移动、尺寸、旋转、层级、组合、解组、页面/对象对齐
+- 辅助能力：网格、5单位智能吸附、框选、缩放、平移、方向键微移
+- 自主工程格式：`.jxv` JSON文档，支持打开、保存、另存和50步历史记录
+- 导出：SVG矢量图、PDF、300dpi PNG
+
+## 暂未冒充完成的能力
+
+以下模块已经预留菜单和架构位置，但不在当前基础版本中虚假宣称完成：
+
+- 完整贝塞尔控制柄和节点类型
+- 六种布尔造型运算
+- 专业段落文本、文字绕图、OpenType排版
+- 渐变、网状填充、封套、调和、轮廓图、阴影
+- ICC/CMYK/Pantone印前色彩管理
+- AI位图描摹和PSD/AI/EPS导入
+- 原生CDR读写
+
+CDR交付继续使用现有软件中的 CorelDRAW X7—2020 合法联动模块。
+
+## 本地编译
+
+安装 Qt 6.5+（Widgets、Svg、PrintSupport）、CMake 3.21+ 和 Ninja：
+
+```powershell
+cmake -S native -B native/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build native/build
+```
+
+GitHub Actions 工作流 `.github/workflows/build-native-windows.yml` 会生成可安装 EXE 和免安装 ZIP。
+

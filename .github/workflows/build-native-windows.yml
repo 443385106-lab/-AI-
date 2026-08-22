@@ -1,0 +1,65 @@
+name: Build Native Vector Studio
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "native/**"
+      - "assets/icon-b64/**"
+      - ".github/workflows/build-native-windows.yml"
+
+jobs:
+  build-native:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore application icon
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem "assets/icon-b64/app-icon.ico.b64.part-*" | Sort-Object Name
+          $base64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ""
+          [System.IO.File]::WriteAllBytes("assets/app-icon.ico", [Convert]::FromBase64String($base64))
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          arch: "win64_msvc2022_64"
+          modules: "qtsvg"
+          cache: true
+
+      - name: Configure
+        shell: pwsh
+        run: cmake -S native -B native/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$pwd/native/package"
+
+      - name: Build
+        run: cmake --build native/build --config Release
+
+      - name: Stage portable application
+        shell: pwsh
+        run: |
+          cmake --install native/build --config Release
+          windeployqt --release --no-translations native/package/bin/JiangxinVectorStudio.exe
+          New-Item -ItemType Directory -Force native/dist | Out-Null
+          Compress-Archive -Path native/package/* -DestinationPath native/dist/JiangxinVectorStudio-1.0.0-Portable.zip -Force
+
+      - name: Build NSIS installer
+        shell: pwsh
+        run: |
+          $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) { throw "NSIS compiler not found" }
+          & $makensis /DOUTFILE="..\dist\JiangxinVectorStudio-1.0.0-Setup.exe" native/installer/JiangxinVectorStudio.nsi
+
+      - name: Upload Windows builds
+        uses: actions/upload-artifact@v4
+        with:
+          name: JiangxinVectorStudio-Windows-1.0.0
+          path: native/dist/*
+          if-no-files-found: error
+          retention-days: 30
+
