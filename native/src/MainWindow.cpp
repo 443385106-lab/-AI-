@@ -4,6 +4,7 @@
 #include "RulerWidget.hpp"
 
 #include <QActionGroup>
+#include <QApplication>
 #include <QCloseEvent>
 #include <QColorDialog>
 #include <QCheckBox>
@@ -13,6 +14,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFile>
@@ -51,10 +53,12 @@
 #include <QPdfWriter>
 #include <QPushButton>
 #include <QProgressDialog>
+#include <QProcess>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
 #include <QSet>
 #include <QStandardPaths>
+#include <QTemporaryFile>
 #include <QStatusBar>
 #include <QSvgGenerator>
 #include <QSvgRenderer>
@@ -353,6 +357,119 @@ BoardTheme analyzeImageTheme(const QImage &source, qreal *headerRatio, qreal *ma
     *logoCandidate = sampled > 0 && different > sampled / 7;
     return {QStringLiteral("样图分析"), primary, accent, background};
 }
+
+QJsonArray normalizedOcrLines(const QJsonObject &result)
+{
+    if (result["lines"].isArray()) return result["lines"].toArray();
+    if (result["lines"].isObject()) return {result["lines"]};
+    return {};
+}
+
+int ocrTitleLineIndex(const QJsonObject &result)
+{
+    const QJsonArray lines = normalizedOcrLines(result); if (lines.isEmpty()) return -1;
+    const qreal imageHeight = qMax(1.0, result["height"].toDouble(1.0)); int best = -1; qreal bestScore = -1.0;
+    for (int index = 0; index < lines.size(); ++index) {
+        const QJsonObject line = lines[index].toObject(); if (line["text"].toString().trimmed().isEmpty()) continue;
+        const qreal y = line["y"].toDouble(), height = qMax(1.0, line["h"].toDouble()); if (y > imageHeight * 0.42) continue;
+        const qreal score = height * (1.35 - qMin(1.0, y / imageHeight)); if (score > bestScore) { bestScore = score; best = index; }
+    }
+    if (best >= 0) return best;
+    for (int index = 0; index < lines.size(); ++index) if (!lines[index].toObject()["text"].toString().trimmed().isEmpty()) return index;
+    return -1;
+}
+
+QString ocrRecognizedTitle(const QJsonObject &result)
+{
+    const QJsonArray lines = normalizedOcrLines(result); const int index = ocrTitleLineIndex(result);
+    return index >= 0 && index < lines.size() ? lines[index].toObject()["text"].toString().trimmed() : QString();
+}
+
+QString ocrRecognizedBody(const QJsonObject &result)
+{
+    const QJsonArray lines = normalizedOcrLines(result); const int titleIndex = ocrTitleLineIndex(result); QStringList body;
+    for (int index = 0; index < lines.size(); ++index) { const QString text = lines[index].toObject()["text"].toString().trimmed(); if (index != titleIndex && !text.isEmpty()) body.append(text); }
+    return body.join('\n');
+}
+
+void addPositionedOcrDesign(QGraphicsScene *scene, const QRectF &page, const QJsonObject &result, const QString &title, const QString &body, const QString &footer, const BoardTheme &theme, qreal headerRatio, qreal marginRatio)
+{
+    const qreal shortSide = qMin(page.width(), page.height()); const qreal margin = shortSide * qBound(0.025, marginRatio, 0.09); const qreal borderWidth = qMax(8.0, shortSide * 0.0045);
+    auto *background = new QGraphicsRectItem(page); background->setPen(Qt::NoPen); background->setBrush(theme.background); prepareBoardItem(background, QStringLiteral("rectangle"), QStringLiteral("OCR展板底色"), scene, -10.0);
+    auto *outer = new QGraphicsRectItem(page.adjusted(margin * 0.48, margin * 0.48, -margin * 0.48, -margin * 0.48)); outer->setBrush(Qt::NoBrush); outer->setPen(QPen(theme.primary, borderWidth)); prepareBoardItem(outer, QStringLiteral("rectangle"), QStringLiteral("OCR外边框"), scene, -5.0);
+    auto *inner = new QGraphicsRectItem(page.adjusted(margin, margin, -margin, -margin)); inner->setBrush(Qt::NoBrush); inner->setPen(QPen(theme.accent, borderWidth * 0.42)); prepareBoardItem(inner, QStringLiteral("rectangle"), QStringLiteral("OCR内边框"), scene, -4.0);
+    const QRectF header(page.left() + margin, page.top() + margin, page.width() - margin * 2.0, page.height() * qBound(0.09, headerRatio, 0.24)); auto *bar = new QGraphicsRectItem(header); bar->setPen(Qt::NoPen); bar->setBrush(theme.primary); prepareBoardItem(bar, QStringLiteral("rectangle"), QStringLiteral("OCR标题区"), scene, -2.0);
+
+    const QJsonArray lines = normalizedOcrLines(result); const int titleIndex = ocrTitleLineIndex(result); const qreal imageWidth = qMax(1.0, result["width"].toDouble(1.0)); const qreal imageHeight = qMax(1.0, result["height"].toDouble(1.0)); const qreal scaleX = page.width() / imageWidth, scaleY = page.height() / imageHeight;
+    QStringList replacementBody; for (const QString &line : body.split('\n', Qt::SkipEmptyParts)) if (!line.trimmed().isEmpty()) replacementBody.append(line.trimmed()); int bodyIndex = 0;
+    for (int index = 0; index < lines.size(); ++index) {
+        const QJsonObject line = lines[index].toObject(); QString text = index == titleIndex ? title.trimmed() : replacementBody.value(bodyIndex++); if (text.isEmpty()) continue;
+        const QRectF mapped(page.left() + line["x"].toDouble() * scaleX, page.top() + line["y"].toDouble() * scaleY, qMax(30.0, line["w"].toDouble() * scaleX), qMax(24.0, line["h"].toDouble() * scaleY));
+        auto *item = new QGraphicsTextItem(text); QFont font(QStringLiteral("Microsoft YaHei")); font.setBold(index == titleIndex); font.setPointSizeF(qBound(12.0, mapped.height() * (index == titleIndex ? 0.30 : 0.27), 220.0)); item->setFont(font); item->setDefaultTextColor(index == titleIndex && mapped.top() <= header.bottom() ? Qt::white : QColor("#20252A")); item->setTextWidth(qMin(page.right() - mapped.left() - margin, qMax(mapped.width() * 1.12, shortSide * 0.08))); item->document()->setDocumentMargin(0); QTextOption option = item->document()->defaultTextOption(); option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere); item->document()->setDefaultTextOption(option); item->setPos(mapped.topLeft()); prepareBoardItem(item, QStringLiteral("text"), QStringLiteral("OCR文字区域 %1").arg(index + 1), scene, 2.0);
+    }
+    for (; bodyIndex < replacementBody.size(); ++bodyIndex) {
+        auto *item = new QGraphicsTextItem(replacementBody[bodyIndex]); QFont font(QStringLiteral("Microsoft YaHei")); font.setPointSizeF(qMax(16.0, shortSide * 0.015)); item->setFont(font); item->setDefaultTextColor(QColor("#20252A")); item->setTextWidth(page.width() - margin * 3.0); item->setPos(page.left() + margin * 1.5, header.bottom() + margin + bodyIndex * shortSide * 0.045); prepareBoardItem(item, QStringLiteral("text"), QStringLiteral("OCR补充文字 %1").arg(bodyIndex + 1), scene, 2.0);
+    }
+    if (!footer.trimmed().isEmpty()) { auto *item = new QGraphicsTextItem(footer.trimmed()); QFont font(QStringLiteral("Microsoft YaHei")); font.setBold(true); font.setPointSizeF(qMax(16.0, shortSide * 0.014)); item->setFont(font); item->setDefaultTextColor(theme.primary); item->setTextWidth(page.width() - margin * 3.0); QTextOption option = item->document()->defaultTextOption(); option.setAlignment(Qt::AlignRight); item->document()->setDefaultTextOption(option); item->setPos(page.left() + margin * 1.5, page.bottom() - margin * 1.25 - item->boundingRect().height()); prepareBoardItem(item, QStringLiteral("text"), QStringLiteral("OCR落款"), scene, 3.0); }
+}
+
+QJsonObject runWindowsOcr(const QString &sourcePath, QWidget *parent, QString *error)
+{
+#ifndef Q_OS_WIN
+    if (error) *error = QStringLiteral("本地OCR仅在Windows 10/11中可用"); return {};
+#else
+    QString imagePath = QFileInfo(sourcePath).absoluteFilePath(); QTemporaryFile scaled(QDir::tempPath() + QStringLiteral("/jx-ocr-image-XXXXXX.png"));
+    const QImage original(imagePath); if (!original.isNull() && qMax(original.width(), original.height()) > 2400) { if (!scaled.open()) { if (error) *error = scaled.errorString(); return {}; } const QImage resized = original.scaled(2400, 2400, Qt::KeepAspectRatio, Qt::SmoothTransformation); if (!resized.save(&scaled, "PNG")) { if (error) *error = QStringLiteral("无法准备OCR临时图片"); return {}; } scaled.close(); imagePath = scaled.fileName(); }
+    static const char scriptText[] = R"JXPS(param([Parameter(Mandatory=$true)][string]$ImagePath)
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = [Console]::OutputEncoding
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+function Await-Result($Operation, [Type]$ResultType) {
+  $method = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq 'AsTask' -and $_.IsGenericMethodDefinition -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+  } | Select-Object -First 1
+  if ($null -eq $method) { throw 'Windows Runtime AsTask method not found' }
+  $task = $method.MakeGenericMethod($ResultType).Invoke($null, @($Operation))
+  $task.Wait()
+  return $task.Result
+}
+$null = [Windows.Storage.StorageFile, Windows.Storage, ContentType=WindowsRuntime]
+$null = [Windows.Storage.FileAccessMode, Windows.Storage, ContentType=WindowsRuntime]
+$null = [Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapPixelFormat, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapAlphaMode, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType=WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrResult, Windows.Media.Ocr, ContentType=WindowsRuntime]
+$file = Await-Result ([Windows.Storage.StorageFile]::GetFileFromPathAsync($ImagePath)) ([Windows.Storage.StorageFile])
+$stream = Await-Result ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+$decoder = Await-Result ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$bitmap = Await-Result ($decoder.GetSoftwareBitmapAsync([Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8, [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied)) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+if ($null -eq $engine) { throw '没有可用的Windows OCR语言，请在系统语言设置中安装中文或英文OCR语言包' }
+$result = Await-Result ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
+$lines = @()
+foreach ($line in $result.Lines) {
+  $minX = [double]::MaxValue; $minY = [double]::MaxValue; $maxX = 0.0; $maxY = 0.0
+  foreach ($word in $line.Words) { $rect = $word.BoundingRect; $minX = [Math]::Min($minX, $rect.X); $minY = [Math]::Min($minY, $rect.Y); $maxX = [Math]::Max($maxX, $rect.X + $rect.Width); $maxY = [Math]::Max($maxY, $rect.Y + $rect.Height) }
+  if ($minX -eq [double]::MaxValue) { $minX = 0; $minY = 0 }
+  $lines += [PSCustomObject]@{ text = $line.Text; x = $minX; y = $minY; w = [Math]::Max(1, $maxX - $minX); h = [Math]::Max(1, $maxY - $minY) }
+}
+$language = if ($null -ne $engine.RecognizerLanguage) { $engine.RecognizerLanguage.LanguageTag } else { '' }
+[PSCustomObject]@{ text = $result.Text; width = $bitmap.PixelWidth; height = $bitmap.PixelHeight; language = $language; lines = @($lines) } | ConvertTo-Json -Depth 5 -Compress
+)JXPS";
+    QTemporaryFile script(QDir::tempPath() + QStringLiteral("/jx-ocr-XXXXXX.ps1")); if (!script.open()) { if (error) *error = script.errorString(); return {}; } script.write(scriptText); script.close();
+    QProcess process; process.setProcessChannelMode(QProcess::SeparateChannels); process.start(QStringLiteral("powershell.exe"), {QStringLiteral("-NoLogo"), QStringLiteral("-NoProfile"), QStringLiteral("-NonInteractive"), QStringLiteral("-ExecutionPolicy"), QStringLiteral("Bypass"), QStringLiteral("-File"), script.fileName(), imagePath});
+    QProgressDialog progress(QStringLiteral("正在使用Windows本地OCR识别文字…"), QStringLiteral("取消"), 0, 0, parent); progress.setWindowModality(Qt::WindowModal); progress.setMinimumDuration(300); QElapsedTimer timer; timer.start();
+    while (process.state() != QProcess::NotRunning) { QApplication::processEvents(); if (progress.wasCanceled()) { process.kill(); process.waitForFinished(2000); if (error) *error = QStringLiteral("OCR已取消"); return {}; } if (timer.elapsed() > 120000) { process.kill(); process.waitForFinished(2000); if (error) *error = QStringLiteral("OCR识别超时"); return {}; } process.waitForFinished(80); }
+    progress.close(); const QByteArray standardError = process.readAllStandardError(); const QByteArray standardOutput = process.readAllStandardOutput().trimmed();
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) { if (error) *error = QString::fromUtf8(standardError).trimmed(); if (error && error->isEmpty()) *error = QStringLiteral("Windows OCR运行失败"); return {}; }
+    const int start = standardOutput.indexOf('{'); const int end = standardOutput.lastIndexOf('}'); if (start < 0 || end < start) { if (error) *error = QStringLiteral("OCR没有返回有效结果"); return {}; }
+    QJsonParseError parseError; const QJsonDocument document = QJsonDocument::fromJson(standardOutput.mid(start, end - start + 1), &parseError); if (parseError.error != QJsonParseError::NoError) { if (error) *error = QStringLiteral("OCR结果解析失败：") + parseError.errorString(); return {}; } return document.object();
+#endif
+}
 }
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
@@ -479,6 +596,7 @@ void MainWindow::buildMenus()
     smartMenu->addAction(QStringLiteral("输入制度名称自动生成…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N), this, &MainWindow::generateSmartBoard);
     smartMenu->addAction(QStringLiteral("批量生成独立制度牌…"), this, &MainWindow::batchGenerateBoards);
     smartMenu->addAction(QStringLiteral("上传样图分析并仿制版式…"), this, &MainWindow::analyzeSampleLayout);
+    smartMenu->addAction(QStringLiteral("OCR识别并重建文字版式…"), this, &MainWindow::ocrSampleImage);
 
     auto *templateMenu = menuBar()->addMenu(QStringLiteral("模板库(&M)"));
     templateMenu->addAction(QStringLiteral("打开本地模板库…"), this, &MainWindow::openTemplateLibrary);
@@ -504,6 +622,7 @@ void MainWindow::buildMenus()
     bitmapMenu->addAction(QStringLiteral("提亮"), this, [this] { adjustBitmap(2); });
     bitmapMenu->addSeparator();
     bitmapMenu->addAction(QStringLiteral("基础位图转矢量"), this, &MainWindow::traceBitmap);
+    bitmapMenu->addAction(QStringLiteral("Windows本地OCR提取文字…"), this, &MainWindow::ocrSampleImage);
     auto *textMenu = menuBar()->addMenu(QStringLiteral("文字(&T)"));
     textMenu->addAction(QStringLiteral("添加美术字"), this, [this] { setCurrentTool(CanvasView::Tool::Text); });
     textMenu->addAction(QStringLiteral("添加段落文本"), this, [this] { setCurrentTool(CanvasView::Tool::ParagraphText); });
@@ -511,7 +630,7 @@ void MainWindow::buildMenus()
     textMenu->addAction(QStringLiteral("文本框自动缩字"), this, &MainWindow::autoFitSelectedText);
     auto *helpMenu = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
     helpMenu->addAction(QStringLiteral("关于匠心矢量设计"), this, [this] {
-        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.6 Native\n第七阶段：样图颜色与结构分析、可编辑仿制版式、本地模板收藏、搜索和行业分类。\n不包含任何CorelDRAW专有代码或文件规范。"));
+        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.7 Native\n第八阶段：Windows本地OCR、中文英文数字提取、文字区域定位、标准重排和原位重建。\n不包含任何CorelDRAW专有代码或文件规范。"));
     });
 }
 
@@ -641,12 +760,12 @@ void MainWindow::buildDockers()
     auto *productionDock = new QDockWidget(QStringLiteral("生产与导出"), this); auto *panel = new QWidget; auto *layout = new QVBoxLayout(panel);
     auto *newButton = new QPushButton(QStringLiteral("新建设计")); auto *saveButton = new QPushButton(QStringLiteral("保存工程文件 .jxv"));
     auto *svgButton = new QPushButton(QStringLiteral("导出 SVG 矢量图")); auto *pdfButton = new QPushButton(QStringLiteral("导出普通 PDF")); auto *pngButton = new QPushButton(QStringLiteral("导出 PNG 高清图"));
-    auto *smartButton = new QPushButton(QStringLiteral("智能生成制度展板")); auto *sampleButton = new QPushButton(QStringLiteral("上传样图仿制版式")); auto *templateButton = new QPushButton(QStringLiteral("本地模板库")); auto *printButton = new QPushButton(QStringLiteral("印前预检并导出印刷 PDF")); auto *batchButton = new QPushButton(QStringLiteral("批量生成独立制度牌"));
+    auto *smartButton = new QPushButton(QStringLiteral("智能生成制度展板")); auto *sampleButton = new QPushButton(QStringLiteral("上传样图仿制版式")); auto *ocrButton = new QPushButton(QStringLiteral("OCR识别样图文字")); auto *templateButton = new QPushButton(QStringLiteral("本地模板库")); auto *printButton = new QPushButton(QStringLiteral("印前预检并导出印刷 PDF")); auto *batchButton = new QPushButton(QStringLiteral("批量生成独立制度牌"));
     layout->addWidget(new QLabel(QStringLiteral("自主文档格式：JXV\n交付格式：SVG / PDF / PNG / JPG / TIFF\n印刷输出：300dpi、出血与裁切线。")));
-    layout->addWidget(smartButton); layout->addWidget(sampleButton); layout->addWidget(templateButton); layout->addWidget(newButton); layout->addWidget(saveButton); layout->addWidget(svgButton); layout->addWidget(pdfButton); layout->addWidget(pngButton); layout->addWidget(printButton); layout->addWidget(batchButton); layout->addStretch();
+    layout->addWidget(smartButton); layout->addWidget(sampleButton); layout->addWidget(ocrButton); layout->addWidget(templateButton); layout->addWidget(newButton); layout->addWidget(saveButton); layout->addWidget(svgButton); layout->addWidget(pdfButton); layout->addWidget(pngButton); layout->addWidget(printButton); layout->addWidget(batchButton); layout->addStretch();
     connect(newButton, &QPushButton::clicked, this, &MainWindow::newDocument); connect(saveButton, &QPushButton::clicked, this, [this] { saveDocument(false); });
     connect(svgButton, &QPushButton::clicked, this, &MainWindow::exportSvg); connect(pdfButton, &QPushButton::clicked, this, &MainWindow::exportPdf); connect(pngButton, &QPushButton::clicked, this, &MainWindow::exportPng);
-    connect(smartButton, &QPushButton::clicked, this, &MainWindow::generateSmartBoard); connect(sampleButton, &QPushButton::clicked, this, &MainWindow::analyzeSampleLayout); connect(templateButton, &QPushButton::clicked, this, &MainWindow::openTemplateLibrary); connect(printButton, &QPushButton::clicked, this, [this] { preflightDocument(); exportPrintPdf(); }); connect(batchButton, &QPushButton::clicked, this, &MainWindow::batchGenerateBoards);
+    connect(smartButton, &QPushButton::clicked, this, &MainWindow::generateSmartBoard); connect(sampleButton, &QPushButton::clicked, this, &MainWindow::analyzeSampleLayout); connect(ocrButton, &QPushButton::clicked, this, &MainWindow::ocrSampleImage); connect(templateButton, &QPushButton::clicked, this, &MainWindow::openTemplateLibrary); connect(printButton, &QPushButton::clicked, this, [this] { preflightDocument(); exportPrintPdf(); }); connect(batchButton, &QPushButton::clicked, this, &MainWindow::batchGenerateBoards);
     productionDock->setWidget(panel); addDockWidget(Qt::RightDockWidgetArea, productionDock); tabifyDockWidget(objectsDock, productionDock); objectsDock->raise();
 }
 
@@ -828,15 +947,39 @@ void MainWindow::batchGenerateBoards()
     progress.setValue(titles.size()); QString result = QStringLiteral("已生成 %1/%2 张独立制度牌。\n输出文件夹：%3\n\n自动生成内容属于排版草稿，上墙或交付前请逐张审核。").arg(succeeded).arg(titles.size()).arg(QDir::toNativeSeparators(directory)); if (!failures.isEmpty()) result += QStringLiteral("\n\n失败：\n") + failures.join('\n'); QMessageBox::information(this, QStringLiteral("批量生成完成"), result); setStatus(QStringLiteral("批量生成完成：%1张").arg(succeeded));
 }
 
+void MainWindow::ocrSampleImage()
+{
+    const QString fileName = QFileDialog::getOpenFileName(this, QStringLiteral("选择需要识别的样图"), {}, QStringLiteral("样图 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")); if (fileName.isEmpty()) return;
+    const QImage image(fileName); if (image.isNull()) { QMessageBox::warning(this, QStringLiteral("读取失败"), QStringLiteral("无法读取所选样图")); return; }
+    QString ocrError; const QJsonObject ocr = runWindowsOcr(fileName, this, &ocrError); const QJsonArray lines = normalizedOcrLines(ocr);
+    if (ocr.isEmpty() || lines.isEmpty()) { QMessageBox::warning(this, QStringLiteral("OCR识别失败"), (ocrError.isEmpty() ? QStringLiteral("样图中没有识别到文字。") : ocrError) + QStringLiteral("\n\n请确认Windows已安装“中文（简体）”或相应语言包，并尽量使用清晰、正向、对比度较高的图片。")); return; }
+    qreal headerRatio = 0.125, marginRatio = 0.045; bool logoCandidate = false; const BoardTheme theme = analyzeImageTheme(image, &headerRatio, &marginRatio, &logoCandidate);
+    QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("Windows本地OCR识别结果")); dialog.resize(680, 620); QFormLayout layout(&dialog);
+    auto *summary = new QLabel(QStringLiteral("识别到 %1 行文字　语言：%2　原图：%3×%4像素\nOCR结果可能存在错别字，生成前可直接校对。")
+        .arg(lines.size()).arg(ocr["language"].toString(QStringLiteral("系统首选语言"))).arg(qRound(ocr["width"].toDouble())).arg(qRound(ocr["height"].toDouble()))); summary->setWordWrap(true);
+    auto *titleEdit = new QLineEdit(ocrRecognizedTitle(ocr)); auto *bodyEdit = new QPlainTextEdit(ocrRecognizedBody(ocr)); auto *footerEdit = new QLineEdit; footerEdit->setPlaceholderText(QStringLiteral("公司名称或落款（可留空）"));
+    auto *modeCombo = new QComboBox; modeCombo->addItems({QStringLiteral("标准制度牌自动排版（推荐）"), QStringLiteral("按样图文字区域原位重建")}); auto *sizeCombo = new QComboBox; sizeCombo->addItems(boardSizeLabels());
+    layout.addRow(summary); layout.addRow(QStringLiteral("识别标题"), titleEdit); layout.addRow(QStringLiteral("识别正文"), bodyEdit); layout.addRow(QStringLiteral("落款"), footerEdit); layout.addRow(QStringLiteral("生成方式"), modeCombo); layout.addRow(QStringLiteral("成品尺寸"), sizeCombo);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("生成可编辑矢量版式")); buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消")); layout.addRow(buttons); connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return; const QString title = titleEdit->text().trimmed(); const QString body = bodyEdit->toPlainText().trimmed(); if (title.isEmpty()) { QMessageBox::warning(this, QStringLiteral("缺少标题"), QStringLiteral("请校对并填写制度标题")); return; } if (!maybeSave()) return;
+    const QSizeF sizeMm = boardSizeMillimeters(sizeCombo->currentText()); const QRectF page(100, 100, sizeMm.width() * 10.0, sizeMm.height() * 10.0); m_restoring = true; m_canvas->scene()->clear(); m_canvas->setPageRect(page); m_fileName.clear(); m_history.clear(); m_historyIndex = -1; m_currentLayer = QStringLiteral("OCR重建"); m_canvas->setActiveLayer(m_currentLayer);
+    if (modeCombo->currentIndex() == 0) addBoardDesign(m_canvas->scene(), page, title, body.isEmpty() ? policyBodyForTitle(title) : body, footerEdit->text(), theme, headerRatio, marginRatio);
+    else addPositionedOcrDesign(m_canvas->scene(), page, ocr, title, body, footerEdit->text(), theme, headerRatio, marginRatio);
+    m_restoring = false; m_modified = true; recordHistory(QStringLiteral("OCR识别并重建版式")); m_canvas->zoomToFit(); updateObjectList(); updateWindowTitle(); setStatus(QStringLiteral("OCR已识别%1行并生成可编辑文字对象").arg(lines.size()));
+}
+
 void MainWindow::analyzeSampleLayout()
 {
     const QString fileName = QFileDialog::getOpenFileName(this, QStringLiteral("选择需要分析的样图"), {}, QStringLiteral("样图 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")); if (fileName.isEmpty()) return;
     const QImage image(fileName); if (image.isNull()) { QMessageBox::warning(this, QStringLiteral("读取失败"), QStringLiteral("无法读取所选样图")); return; }
     qreal headerRatio = 0.125, marginRatio = 0.045; bool logoCandidate = false; const BoardTheme theme = analyzeImageTheme(image, &headerRatio, &marginRatio, &logoCandidate);
+    QString ocrError; const QJsonObject ocr = runWindowsOcr(fileName, this, &ocrError); const QJsonArray ocrLines = normalizedOcrLines(ocr);
     QDialog dialog(this); dialog.setWindowTitle(QStringLiteral("样图版式分析结果")); dialog.resize(620, 560); QFormLayout layout(&dialog);
     auto *preview = new QLabel(QStringLiteral("底色　　　主色　　　辅色")); preview->setAlignment(Qt::AlignCenter); preview->setMinimumHeight(54); preview->setStyleSheet(QStringLiteral("QLabel{color:%1;background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 %2,stop:0.34 %2,stop:0.35 %1,stop:0.67 %1,stop:0.68 %3,stop:1 %3);border:1px solid #777;font-weight:bold;}").arg(theme.primary.name(), theme.background.name(), theme.accent.name()));
-    auto *analysis = new QLabel(QStringLiteral("识别结果：标题区约占 %1%　边框内缩约 %2%　LOGO候选：%3").arg(qRound(headerRatio * 100)).arg(qRound(marginRatio * 100)).arg(logoCandidate ? QStringLiteral("有") : QStringLiteral("未发现"))); analysis->setWordWrap(true);
+    const QString ocrSummary = !ocrLines.isEmpty() ? QStringLiteral("OCR：已识别%1行（%2），下方文字已自动填入").arg(ocrLines.size()).arg(ocr["language"].toString(QStringLiteral("系统语言"))) : QStringLiteral("OCR：%1，可继续手动输入").arg(ocrError.isEmpty() ? QStringLiteral("未识别到文字") : ocrError);
+    auto *analysis = new QLabel(QStringLiteral("识别结果：标题区约占 %1%　边框内缩约 %2%　LOGO候选：%3\n%4").arg(qRound(headerRatio * 100)).arg(qRound(marginRatio * 100)).arg(logoCandidate ? QStringLiteral("有") : QStringLiteral("未发现"), ocrSummary)); analysis->setWordWrap(true);
     auto *titleEdit = new QLineEdit; titleEdit->setPlaceholderText(QStringLiteral("输入新制度名称")); auto *bodyEdit = new QPlainTextEdit; bodyEdit->setPlaceholderText(QStringLiteral("正文可留空，由本地规则根据标题生成")); auto *footerEdit = new QLineEdit; footerEdit->setPlaceholderText(QStringLiteral("公司名称或落款（可留空）")); auto *sizeCombo = new QComboBox; sizeCombo->addItems(boardSizeLabels()); auto *logoBox = new QCheckBox(QStringLiteral("在检测位置保留LOGO占位框")); logoBox->setChecked(logoCandidate);
+    if (!ocrLines.isEmpty()) { titleEdit->setText(ocrRecognizedTitle(ocr)); bodyEdit->setPlainText(ocrRecognizedBody(ocr)); }
     layout.addRow(preview); layout.addRow(analysis); layout.addRow(QStringLiteral("制度名称"), titleEdit); layout.addRow(QStringLiteral("正文内容"), bodyEdit); layout.addRow(QStringLiteral("落款"), footerEdit); layout.addRow(QStringLiteral("成品尺寸"), sizeCombo); layout.addRow(logoBox);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("生成可编辑版式")); buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消")); layout.addRow(buttons); connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) return; const QString title = titleEdit->text().trimmed(); if (title.isEmpty()) { QMessageBox::warning(this, QStringLiteral("缺少名称"), QStringLiteral("请输入制度名称")); return; } QString body = bodyEdit->toPlainText().trimmed(); if (body.isEmpty()) body = policyBodyForTitle(title); if (!maybeSave()) return;
@@ -1499,7 +1642,7 @@ void MainWindow::chooseSecondFillColor()
 
 void MainWindow::updateWindowTitle()
 {
-    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.6 Native").arg(m_modified ? "*" : "", name));
+    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.7 Native").arg(m_modified ? "*" : "", name));
 }
 
 void MainWindow::setStatus(const QString &message) { if (m_statusLabel) m_statusLabel->setText(message); }
