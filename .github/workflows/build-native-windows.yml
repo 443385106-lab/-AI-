@@ -45,19 +45,19 @@ jobs:
           cmake --install native/build --config Release
           windeployqt --release --no-translations native/package/bin/JiangxinVectorStudio.exe
           New-Item -ItemType Directory -Force native/dist | Out-Null
-          Compress-Archive -Path native/package/* -DestinationPath native/dist/JiangxinVectorStudio-1.0.0-Portable.zip -Force
+          Compress-Archive -Path native/package/* -DestinationPath native/dist/JiangxinVectorStudio-1.1.0-Portable.zip -Force
 
       - name: Build NSIS installer
         shell: pwsh
         run: |
           $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
           if (-not (Test-Path $makensis)) { throw "NSIS compiler not found" }
-          & $makensis /DOUTFILE="..\dist\JiangxinVectorStudio-1.0.0-Setup.exe" native/installer/JiangxinVectorStudio.nsi
+          & $makensis /DOUTFILE="..\dist\JiangxinVectorStudio-1.1.0-Setup.exe" native/installer/JiangxinVectorStudio.nsi
 
       - name: Upload Windows builds
         uses: actions/upload-artifact@v4
         with:
-          name: JiangxinVectorStudio-Windows-1.0.0
+          name: JiangxinVectorStudio-Windows-1.1.0
           path: native/dist/*
           if-no-files-found: error
           retention-days: 30
