@@ -58,6 +58,10 @@ private:
     void analyzeSampleLayout();
     void openTemplateLibrary();
     void saveCurrentAsTemplate();
+    void configureBrandProfile();
+    void applyBrandProfile();
+    void batchApplyBrandProfile();
+    void findReplaceDocumentText();
     void importSvg();
     void exportSvg();
     void exportPdf();
