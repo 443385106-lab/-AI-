@@ -17,6 +17,7 @@
 #include <QGraphicsEllipseItem>
 #include <QGraphicsLineItem>
 #include <QGraphicsPathItem>
+#include <QGraphicsPixmapItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGraphicsTextItem>
@@ -49,6 +50,7 @@
 #include <QTextOption>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <cmath>
 
 namespace {
 constexpr int KindRole = 0;
@@ -86,6 +88,7 @@ QString itemIcon(const QString &kind)
     if (kind == "text") return QStringLiteral("字");
     if (kind == "group") return QStringLiteral("▣");
     if (kind == "clip") return QStringLiteral("▧");
+    if (kind == "bitmap") return QStringLiteral("▦");
     return QStringLiteral("◇");
 }
 
@@ -109,6 +112,9 @@ QPainterPath localItemPath(QGraphicsItem *item)
     }
     if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) {
         QPainterPath path; path.addText(QPointF(0.0, text->font().pointSizeF()), text->font(), text->toPlainText()); return path;
+    }
+    if (auto *bitmap = dynamic_cast<QGraphicsPixmapItem *>(item)) {
+        QPainterPath path; path.addRect(bitmap->boundingRect()); return path;
     }
     QPainterPath combined;
     for (QGraphicsItem *child : item->childItems()) combined = combined.united(item->mapFromItem(child, localItemPath(child)));
@@ -245,8 +251,23 @@ void MainWindow::buildMenus()
     auto *effectsMenu = menuBar()->addMenu(QStringLiteral("效果(&C)"));
     effectsMenu->addAction(QStringLiteral("线性渐变填充"), this, [this] { m_fillModeCombo->setCurrentIndex(1); applyInspector(); });
     effectsMenu->addAction(QStringLiteral("径向渐变填充"), this, [this] { m_fillModeCombo->setCurrentIndex(2); applyInspector(); });
-    effectsMenu->addAction(QStringLiteral("高级封套/调和模块将在1.5版本启用"));
-    menuBar()->addMenu(QStringLiteral("位图(&B)"))->addAction(QStringLiteral("AI描摹模块将在1.5版本启用"));
+    effectsMenu->addSeparator();
+    effectsMenu->addAction(QStringLiteral("生成轮廓图…"), this, &MainWindow::createContour);
+    effectsMenu->addAction(QStringLiteral("矢量阴影…"), this, &MainWindow::addVectorShadow);
+    effectsMenu->addAction(QStringLiteral("对象调和…"), this, &MainWindow::createBlend);
+    auto *envelopeMenu = effectsMenu->addMenu(QStringLiteral("封套变形"));
+    envelopeMenu->addAction(QStringLiteral("上窄下宽"), this, [this] { applyEnvelope(0); });
+    envelopeMenu->addAction(QStringLiteral("上宽下窄"), this, [this] { applyEnvelope(1); });
+    envelopeMenu->addAction(QStringLiteral("拱形"), this, [this] { applyEnvelope(2); });
+    envelopeMenu->addAction(QStringLiteral("旗形"), this, [this] { applyEnvelope(3); });
+    auto *bitmapMenu = menuBar()->addMenu(QStringLiteral("位图(&B)"));
+    bitmapMenu->addAction(QStringLiteral("导入图片…"), this, &MainWindow::importBitmap);
+    bitmapMenu->addSeparator();
+    bitmapMenu->addAction(QStringLiteral("转换为灰度"), this, [this] { adjustBitmap(0); });
+    bitmapMenu->addAction(QStringLiteral("黑白阈值"), this, [this] { adjustBitmap(1); });
+    bitmapMenu->addAction(QStringLiteral("提亮"), this, [this] { adjustBitmap(2); });
+    bitmapMenu->addSeparator();
+    bitmapMenu->addAction(QStringLiteral("基础位图转矢量"), this, &MainWindow::traceBitmap);
     auto *textMenu = menuBar()->addMenu(QStringLiteral("文字(&T)"));
     textMenu->addAction(QStringLiteral("添加美术字"), this, [this] { setCurrentTool(CanvasView::Tool::Text); });
     textMenu->addAction(QStringLiteral("添加段落文本"), this, [this] { setCurrentTool(CanvasView::Tool::ParagraphText); });
@@ -254,7 +275,7 @@ void MainWindow::buildMenus()
     textMenu->addAction(QStringLiteral("文本框自动缩字"), this, &MainWindow::autoFitSelectedText);
     auto *helpMenu = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
     helpMenu->addAction(QStringLiteral("关于匠心矢量设计"), this, [this] {
-        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.2 Native\n第三阶段：专业文字排版、渐变填充、透明度与快捷色板。\n不包含任何CorelDRAW专有代码或文件规范。"));
+        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.3 Native\n第四阶段：轮廓图、矢量阴影、对象调和、封套预设、位图处理与离线基础描摹。\n不包含任何CorelDRAW专有代码或文件规范。"));
     });
 }
 
@@ -669,6 +690,183 @@ void MainWindow::releaseClip()
     if (changed) markModified(QStringLiteral("已提取图框内容"));
 }
 
+void MainWindow::addVectorShadow()
+{
+    QList<QGraphicsItem *> items;
+    for (QGraphicsItem *item : m_canvas->scene()->selectedItems())
+        if (!item->parentItem() && item->data(KindRole).toString() != QStringLiteral("bitmap")) items.append(item);
+    if (items.isEmpty()) { setStatus(QStringLiteral("请先选择一个矢量或文字对象")); return; }
+    bool ok = false;
+    const qreal offset = QInputDialog::getDouble(this, QStringLiteral("矢量阴影"), QStringLiteral("偏移距离"), 12.0, -500.0, 500.0, 1, &ok);
+    if (!ok) return;
+    for (QGraphicsItem *item : items) {
+        auto *shadow = new QGraphicsPathItem(sceneItemPath(item).translated(offset, offset));
+        shadow->setBrush(QColor(0, 0, 0, 105)); shadow->setPen(Qt::NoPen); shadow->setZValue(item->zValue() - 0.5);
+        shadow->setData(KindRole, QStringLiteral("path")); shadow->setData(NameRole, QStringLiteral("矢量阴影"));
+        shadow->setData(LayerRole, item->data(LayerRole).toString().isEmpty() ? m_currentLayer : item->data(LayerRole)); shadow->setData(VisibleRole, true);
+        shadow->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable);
+        m_canvas->scene()->addItem(shadow);
+    }
+    markModified(QStringLiteral("已生成可编辑矢量阴影"));
+}
+
+void MainWindow::createContour()
+{
+    QList<QGraphicsItem *> items;
+    for (QGraphicsItem *item : m_canvas->scene()->selectedItems())
+        if (!item->parentItem() && item->data(KindRole).toString() != QStringLiteral("bitmap")) items.append(item);
+    if (items.isEmpty()) { setStatus(QStringLiteral("请先选择一个矢量或文字对象")); return; }
+    bool ok = false;
+    const qreal distance = QInputDialog::getDouble(this, QStringLiteral("轮廓图"), QStringLiteral("每层轮廓距离"), 6.0, 0.5, 200.0, 1, &ok);
+    if (!ok) return;
+    const int steps = QInputDialog::getInt(this, QStringLiteral("轮廓图"), QStringLiteral("轮廓层数"), 3, 1, 20, 1, &ok);
+    if (!ok) return;
+    for (QGraphicsItem *item : items) {
+        const QPainterPath base = sceneItemPath(item);
+        for (int step = steps; step >= 1; --step) {
+            QPainterPathStroker stroker; stroker.setWidth(distance * step * 2.0); stroker.setJoinStyle(Qt::RoundJoin);
+            auto *contour = new QGraphicsPathItem(stroker.createStroke(base).united(base));
+            QColor color = m_secondFillColor; color.setAlpha(70 + (steps - step) * 120 / qMax(1, steps));
+            contour->setBrush(color); contour->setPen(Qt::NoPen); contour->setZValue(item->zValue() - 0.1 * step);
+            contour->setData(KindRole, QStringLiteral("path")); contour->setData(NameRole, QStringLiteral("轮廓图 %1").arg(step));
+            contour->setData(LayerRole, item->data(LayerRole).toString().isEmpty() ? m_currentLayer : item->data(LayerRole)); contour->setData(VisibleRole, true);
+            contour->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable);
+            m_canvas->scene()->addItem(contour);
+        }
+    }
+    markModified(QStringLiteral("已生成 %1 层可编辑轮廓图").arg(steps));
+}
+
+void MainWindow::createBlend()
+{
+    QList<QGraphicsItem *> items;
+    for (QGraphicsItem *item : m_canvas->scene()->selectedItems())
+        if (!item->parentItem() && item->data(KindRole).toString() != QStringLiteral("bitmap")) items.append(item);
+    if (items.size() != 2) { setStatus(QStringLiteral("对象调和需要恰好选择两个矢量或文字对象")); return; }
+    std::sort(items.begin(), items.end(), [](QGraphicsItem *a, QGraphicsItem *b) { return a->zValue() < b->zValue(); });
+    bool ok = false;
+    const int count = QInputDialog::getInt(this, QStringLiteral("对象调和"), QStringLiteral("中间对象数量"), 5, 1, 50, 1, &ok);
+    if (!ok) return;
+    const QPainterPath sourcePath = sceneItemPath(items[0]);
+    const QRectF sourceBounds = sourcePath.boundingRect(); const QRectF targetBounds = sceneItemPath(items[1]).boundingRect();
+    if (sourceBounds.width() < 0.01 || sourceBounds.height() < 0.01) { setStatus(QStringLiteral("源对象尺寸过小，无法调和")); return; }
+    const QColor firstColor = itemBrush(items[0]).color(); const QColor lastColor = itemBrush(items[1]).color();
+    for (int index = 1; index <= count; ++index) {
+        const qreal t = static_cast<qreal>(index) / (count + 1.0);
+        const QRectF bounds(sourceBounds.x() + (targetBounds.x() - sourceBounds.x()) * t,
+                            sourceBounds.y() + (targetBounds.y() - sourceBounds.y()) * t,
+                            sourceBounds.width() + (targetBounds.width() - sourceBounds.width()) * t,
+                            sourceBounds.height() + (targetBounds.height() - sourceBounds.height()) * t);
+        QTransform transform; transform.translate(bounds.x(), bounds.y()); transform.scale(bounds.width() / sourceBounds.width(), bounds.height() / sourceBounds.height()); transform.translate(-sourceBounds.x(), -sourceBounds.y());
+        QColor color(firstColor.red() + qRound((lastColor.red() - firstColor.red()) * t),
+                     firstColor.green() + qRound((lastColor.green() - firstColor.green()) * t),
+                     firstColor.blue() + qRound((lastColor.blue() - firstColor.blue()) * t),
+                     firstColor.alpha() + qRound((lastColor.alpha() - firstColor.alpha()) * t));
+        auto *blend = new QGraphicsPathItem(transform.map(sourcePath)); blend->setBrush(color); blend->setPen(itemPen(items[0]));
+        blend->setZValue(items[0]->zValue() + (items[1]->zValue() - items[0]->zValue()) * t);
+        blend->setData(KindRole, QStringLiteral("path")); blend->setData(NameRole, QStringLiteral("调和对象 %1").arg(index));
+        blend->setData(LayerRole, items[0]->data(LayerRole).toString().isEmpty() ? m_currentLayer : items[0]->data(LayerRole)); blend->setData(VisibleRole, true);
+        blend->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable);
+        m_canvas->scene()->addItem(blend);
+    }
+    markModified(QStringLiteral("已生成 %1 个调和对象").arg(count));
+}
+
+void MainWindow::applyEnvelope(int preset)
+{
+    QList<QGraphicsItem *> items;
+    for (QGraphicsItem *item : m_canvas->scene()->selectedItems())
+        if (!item->parentItem() && item->data(KindRole).toString() != QStringLiteral("bitmap")) items.append(item);
+    if (items.isEmpty()) { setStatus(QStringLiteral("请先选择一个矢量或文字对象")); return; }
+    m_canvas->scene()->clearSelection();
+    constexpr qreal Pi = 3.14159265358979323846;
+    for (QGraphicsItem *item : items) {
+        QPainterPath path = sceneItemPath(item); const QRectF bounds = path.boundingRect();
+        if (bounds.width() < 0.01 || bounds.height() < 0.01) { item->setSelected(true); continue; }
+        for (int index = 0; index < path.elementCount(); ++index) {
+            const auto element = path.elementAt(index); const qreal u = (element.x - bounds.left()) / bounds.width(); const qreal v = (element.y - bounds.top()) / bounds.height();
+            qreal x = element.x; qreal y = element.y;
+            if (preset == 0 || preset == 1) {
+                const qreal inset = (preset == 0 ? 1.0 - v : v) * 0.18;
+                x = bounds.left() + (inset + u * (1.0 - 2.0 * inset)) * bounds.width();
+            } else if (preset == 2) {
+                y -= std::sin(Pi * u) * bounds.height() * 0.14;
+            } else {
+                y += std::sin(2.0 * Pi * u) * bounds.height() * 0.08;
+            }
+            path.setElementPositionAt(index, x, y);
+        }
+        const QBrush brush = itemBrush(item); const QPen pen = itemPen(item); const qreal z = item->zValue(); const qreal opacity = item->opacity();
+        const QString layer = item->data(LayerRole).toString().isEmpty() ? m_currentLayer : item->data(LayerRole).toString();
+        m_canvas->scene()->removeItem(item); delete item;
+        auto *envelope = new QGraphicsPathItem(path); envelope->setBrush(brush); envelope->setPen(pen); envelope->setZValue(z); envelope->setOpacity(opacity);
+        envelope->setData(KindRole, QStringLiteral("path")); envelope->setData(NameRole, QStringLiteral("封套变形")); envelope->setData(LayerRole, layer); envelope->setData(VisibleRole, true);
+        envelope->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable);
+        m_canvas->scene()->addItem(envelope); envelope->setSelected(true);
+    }
+    markModified(QStringLiteral("封套预设已应用，对象已转换为曲线"));
+}
+
+void MainWindow::importBitmap()
+{
+    const QString fileName = QFileDialog::getOpenFileName(this, QStringLiteral("导入图片"), {}, QStringLiteral("图片 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"));
+    if (fileName.isEmpty()) return;
+    QPixmap pixmap(fileName); if (pixmap.isNull()) { QMessageBox::warning(this, QStringLiteral("导入失败"), QStringLiteral("无法读取所选图片")); return; }
+    if (pixmap.width() > 1600 || pixmap.height() > 1600) pixmap = pixmap.scaled(1600, 1600, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    auto *bitmap = new QGraphicsPixmapItem(pixmap); bitmap->setPos(m_canvas->pageRect().center() - QPointF(pixmap.width() / 2.0, pixmap.height() / 2.0));
+    bitmap->setData(KindRole, QStringLiteral("bitmap")); bitmap->setData(NameRole, QFileInfo(fileName).completeBaseName()); bitmap->setData(LayerRole, m_currentLayer); bitmap->setData(VisibleRole, true);
+    bitmap->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable);
+    m_canvas->scene()->clearSelection(); m_canvas->scene()->addItem(bitmap); bitmap->setSelected(true); markModified(QStringLiteral("图片已导入"));
+}
+
+void MainWindow::adjustBitmap(int operation)
+{
+    bool changed = false;
+    for (QGraphicsItem *item : m_canvas->scene()->selectedItems()) {
+        auto *bitmap = dynamic_cast<QGraphicsPixmapItem *>(item); if (!bitmap) continue;
+        QImage image = bitmap->pixmap().toImage().convertToFormat(QImage::Format_ARGB32);
+        for (int y = 0; y < image.height(); ++y) {
+            auto *pixels = reinterpret_cast<QRgb *>(image.scanLine(y));
+            for (int x = 0; x < image.width(); ++x) {
+                const int alpha = qAlpha(pixels[x]); const int gray = qGray(pixels[x]);
+                if (operation == 0) pixels[x] = qRgba(gray, gray, gray, alpha);
+                else if (operation == 1) { const int value = gray < 128 ? 0 : 255; pixels[x] = qRgba(value, value, value, alpha); }
+                else pixels[x] = qRgba(qMin(255, qRed(pixels[x]) + 30), qMin(255, qGreen(pixels[x]) + 30), qMin(255, qBlue(pixels[x]) + 30), alpha);
+            }
+        }
+        bitmap->setPixmap(QPixmap::fromImage(image)); changed = true;
+    }
+    if (changed) markModified(operation == 0 ? QStringLiteral("位图已转换为灰度") : operation == 1 ? QStringLiteral("位图黑白阈值已应用") : QStringLiteral("位图已提亮"));
+    else setStatus(QStringLiteral("请先选择一个位图对象"));
+}
+
+void MainWindow::traceBitmap()
+{
+    QGraphicsPixmapItem *bitmap = nullptr;
+    for (QGraphicsItem *item : m_canvas->scene()->selectedItems()) if ((bitmap = dynamic_cast<QGraphicsPixmapItem *>(item))) break;
+    if (!bitmap) { setStatus(QStringLiteral("请先选择一个位图对象")); return; }
+    QImage image = bitmap->pixmap().toImage().convertToFormat(QImage::Format_ARGB32);
+    image = image.scaled(360, 360, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QPainterPath runs;
+    for (int y = 0; y < image.height(); ++y) {
+        const auto *pixels = reinterpret_cast<const QRgb *>(image.constScanLine(y)); int start = -1;
+        for (int x = 0; x <= image.width(); ++x) {
+            const bool dark = x < image.width() && qAlpha(pixels[x]) > 24 && qGray(pixels[x]) < 150;
+            if (dark && start < 0) start = x;
+            if (!dark && start >= 0) { runs.addRect(QRectF(start, y, x - start, 1)); start = -1; }
+        }
+    }
+    if (runs.isEmpty()) { setStatus(QStringLiteral("未检测到可描摹的深色区域")); return; }
+    QTransform scale; scale.scale(bitmap->pixmap().width() / static_cast<qreal>(image.width()), bitmap->pixmap().height() / static_cast<qreal>(image.height()));
+    const QPainterPath traced = bitmap->sceneTransform().map(scale.map(runs.simplified()));
+    auto *vector = new QGraphicsPathItem(traced); vector->setBrush(Qt::black); vector->setPen(Qt::NoPen); vector->setZValue(bitmap->zValue() + 0.1);
+    vector->setData(KindRole, QStringLiteral("path")); vector->setData(NameRole, QStringLiteral("基础位图描摹"));
+    vector->setData(LayerRole, bitmap->data(LayerRole).toString().isEmpty() ? m_currentLayer : bitmap->data(LayerRole)); vector->setData(VisibleRole, true);
+    vector->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable);
+    m_canvas->scene()->clearSelection(); m_canvas->scene()->addItem(vector); vector->setSelected(true);
+    markModified(QStringLiteral("基础位图描摹完成：已生成可编辑路径"));
+}
+
 void MainWindow::arrangeSelection(int direction)
 {
     const auto selected = m_canvas->scene()->selectedItems(); if (selected.isEmpty()) return; qreal minZ = 0, maxZ = 0; for (QGraphicsItem *item : m_canvas->scene()->items()) { minZ = qMin(minZ, item->zValue()); maxZ = qMax(maxZ, item->zValue()); }
@@ -840,7 +1038,7 @@ void MainWindow::chooseSecondFillColor()
 
 void MainWindow::updateWindowTitle()
 {
-    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.2 Native").arg(m_modified ? "*" : "", name));
+    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.3 Native").arg(m_modified ? "*" : "", name));
 }
 
 void MainWindow::setStatus(const QString &message) { if (m_statusLabel) m_statusLabel->setText(message); }
