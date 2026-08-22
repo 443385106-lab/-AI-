@@ -10,40 +10,53 @@
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QAbstractGraphicsShapeItem>
 #include <QGraphicsItemGroup>
 #include <QGraphicsItem>
+#include <QGraphicsEllipseItem>
+#include <QGraphicsLineItem>
 #include <QGraphicsPathItem>
+#include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGraphicsTextItem>
 #include <QGridLayout>
+#include <QHBoxLayout>
 #include <QImage>
 #include <QInputDialog>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPageLayout>
 #include <QPageSize>
 #include <QPainter>
+#include <QPainterPathStroker>
 #include <QPdfWriter>
 #include <QPushButton>
+#include <QSet>
 #include <QStatusBar>
 #include <QSvgGenerator>
 #include <QToolBar>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <algorithm>
 
 namespace {
 constexpr int KindRole = 0;
 constexpr int NameRole = 1;
+constexpr int LayerRole = 2;
+constexpr int LockedRole = 3;
+constexpr int VisibleRole = 4;
 
 QString toolName(CanvasView::Tool tool)
 {
     switch (tool) {
     case CanvasView::Tool::Select: return QStringLiteral("选择工具");
     case CanvasView::Tool::Node: return QStringLiteral("节点工具");
-    case CanvasView::Tool::Freehand: return QStringLiteral("手绘/钢笔");
+    case CanvasView::Tool::Bezier: return QStringLiteral("贝塞尔钢笔");
+    case CanvasView::Tool::Freehand: return QStringLiteral("自由手绘");
     case CanvasView::Tool::Rectangle: return QStringLiteral("矩形工具");
     case CanvasView::Tool::Ellipse: return QStringLiteral("椭圆工具");
     case CanvasView::Tool::Line: return QStringLiteral("直线工具");
@@ -62,12 +75,53 @@ QString itemIcon(const QString &kind)
     if (kind == "path") return QStringLiteral("✎");
     if (kind == "text") return QStringLiteral("字");
     if (kind == "group") return QStringLiteral("▣");
+    if (kind == "clip") return QStringLiteral("▧");
     return QStringLiteral("◇");
 }
 
 QString colorButtonStyle(const QColor &color)
 {
     return QStringLiteral("QToolButton{background:%1;border:1px solid #8f969e;min-width:30px;}").arg(color.name());
+}
+
+QPainterPath localItemPath(QGraphicsItem *item)
+{
+    if (auto *rect = dynamic_cast<QGraphicsRectItem *>(item)) {
+        QPainterPath path; path.addRect(rect->rect()); return path;
+    }
+    if (auto *ellipse = dynamic_cast<QGraphicsEllipseItem *>(item)) {
+        QPainterPath path; path.addEllipse(ellipse->rect()); return path;
+    }
+    if (auto *pathItem = dynamic_cast<QGraphicsPathItem *>(item)) return pathItem->path();
+    if (auto *line = dynamic_cast<QGraphicsLineItem *>(item)) {
+        QPainterPath path; path.moveTo(line->line().p1()); path.lineTo(line->line().p2());
+        QPainterPathStroker stroker; stroker.setWidth(qMax(1.0, line->pen().widthF())); return stroker.createStroke(path);
+    }
+    if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) {
+        QPainterPath path; path.addText(QPointF(0.0, text->font().pointSizeF()), text->font(), text->toPlainText()); return path;
+    }
+    QPainterPath combined;
+    for (QGraphicsItem *child : item->childItems()) combined = combined.united(item->mapFromItem(child, localItemPath(child)));
+    return combined;
+}
+
+QPainterPath sceneItemPath(QGraphicsItem *item)
+{
+    return item->sceneTransform().map(localItemPath(item));
+}
+
+QBrush itemBrush(QGraphicsItem *item)
+{
+    if (auto *shape = dynamic_cast<QAbstractGraphicsShapeItem *>(item)) return shape->brush();
+    if (auto *text = dynamic_cast<QGraphicsTextItem *>(item)) return QBrush(text->defaultTextColor());
+    return QBrush(QColor(244, 197, 66));
+}
+
+QPen itemPen(QGraphicsItem *item)
+{
+    if (auto *shape = dynamic_cast<QAbstractGraphicsShapeItem *>(item)) return shape->pen();
+    if (auto *line = dynamic_cast<QGraphicsLineItem *>(item)) return line->pen();
+    return QPen(QColor(34, 34, 34), 2.0);
 }
 }
 
@@ -142,11 +196,27 @@ void MainWindow::buildMenus()
     auto *objectMenu = menuBar()->addMenu(QStringLiteral("对象(&O)"));
     objectMenu->addAction(QStringLiteral("组合"), QKeySequence(Qt::CTRL | Qt::Key_G), this, &MainWindow::groupSelection);
     objectMenu->addAction(QStringLiteral("取消组合"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G), this, &MainWindow::ungroupSelection);
+    objectMenu->addAction(QStringLiteral("转换为曲线"), QKeySequence(Qt::CTRL | Qt::Key_Q), this, &MainWindow::convertSelectionToPath);
+    auto *shapeMenu = objectMenu->addMenu(QStringLiteral("布尔造型"));
+    shapeMenu->addAction(QStringLiteral("焊接"), this, [this] { booleanSelection(0); });
+    shapeMenu->addAction(QStringLiteral("修剪"), this, [this] { booleanSelection(1); });
+    shapeMenu->addAction(QStringLiteral("相交"), this, [this] { booleanSelection(2); });
+    shapeMenu->addAction(QStringLiteral("简化"), this, [this] { booleanSelection(3); });
+    shapeMenu->addAction(QStringLiteral("前减后"), this, [this] { booleanSelection(4); });
+    shapeMenu->addAction(QStringLiteral("后减前"), this, [this] { booleanSelection(5); });
+    auto *clipMenu = objectMenu->addMenu(QStringLiteral("图框精确裁剪"));
+    clipMenu->addAction(QStringLiteral("置于图框内部"), this, &MainWindow::clipSelection);
+    clipMenu->addAction(QStringLiteral("提取图框内容"), this, &MainWindow::releaseClip);
     objectMenu->addSeparator();
     objectMenu->addAction(QStringLiteral("置于顶层"), this, [this] { arrangeSelection(2); });
     objectMenu->addAction(QStringLiteral("上移一层"), this, [this] { arrangeSelection(1); });
     objectMenu->addAction(QStringLiteral("下移一层"), this, [this] { arrangeSelection(-1); });
     objectMenu->addAction(QStringLiteral("置于底层"), this, [this] { arrangeSelection(-2); });
+    objectMenu->addSeparator();
+    objectMenu->addAction(QStringLiteral("水平镜像"), this, [this] { transformSelection(0); });
+    objectMenu->addAction(QStringLiteral("垂直镜像"), this, [this] { transformSelection(1); });
+    objectMenu->addAction(QStringLiteral("顺时针旋转90°"), this, [this] { transformSelection(2); });
+    objectMenu->addAction(QStringLiteral("逆时针旋转90°"), this, [this] { transformSelection(3); });
 
     auto *layoutMenu = menuBar()->addMenu(QStringLiteral("布局(&L)"));
     layoutMenu->addAction(QStringLiteral("左对齐"), this, [this] { alignSelection(Qt::AlignLeft); });
@@ -156,13 +226,16 @@ void MainWindow::buildMenus()
     layoutMenu->addAction(QStringLiteral("顶端对齐"), this, [this] { alignSelection(Qt::AlignTop); });
     layoutMenu->addAction(QStringLiteral("垂直居中"), this, [this] { alignSelection(Qt::AlignVCenter); });
     layoutMenu->addAction(QStringLiteral("底端对齐"), this, [this] { alignSelection(Qt::AlignBottom); });
+    layoutMenu->addSeparator();
+    layoutMenu->addAction(QStringLiteral("水平等距分布"), this, [this] { distributeSelection(true); });
+    layoutMenu->addAction(QStringLiteral("垂直等距分布"), this, [this] { distributeSelection(false); });
 
     menuBar()->addMenu(QStringLiteral("效果(&C)"))->addAction(QStringLiteral("高级效果模块将在1.5版本启用"));
     menuBar()->addMenu(QStringLiteral("位图(&B)"))->addAction(QStringLiteral("AI描摹模块将在1.5版本启用"));
     menuBar()->addMenu(QStringLiteral("文字(&T)"))->addAction(QStringLiteral("添加美术字"), this, [this] { setCurrentTool(CanvasView::Tool::Text); });
     auto *helpMenu = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
     helpMenu->addAction(QStringLiteral("关于匠心矢量设计"), this, [this] {
-        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.0 Native\n兼容专业图文设计工作流程的国产矢量编辑器。\n不包含任何CorelDRAW专有代码或文件规范。"));
+        QMessageBox::about(this, QStringLiteral("关于"), QStringLiteral("匠心矢量设计 1.1 Native\n第二阶段：贝塞尔节点、布尔造型、图层与图框裁剪。\n不包含任何CorelDRAW专有代码或文件规范。"));
     });
 }
 
@@ -182,7 +255,8 @@ void MainWindow::buildToolbox()
     addToolBar(Qt::LeftToolBarArea, tools);
     tools->addAction(addToolAction(QStringLiteral("➤"), QStringLiteral("V"), CanvasView::Tool::Select));
     tools->addAction(addToolAction(QStringLiteral("⌁"), QStringLiteral("N"), CanvasView::Tool::Node));
-    tools->addAction(addToolAction(QStringLiteral("✎"), QStringLiteral("P"), CanvasView::Tool::Freehand));
+    tools->addAction(addToolAction(QStringLiteral("⌁P"), QStringLiteral("P"), CanvasView::Tool::Bezier));
+    tools->addAction(addToolAction(QStringLiteral("✎"), QStringLiteral("F"), CanvasView::Tool::Freehand));
     tools->addAction(addToolAction(QStringLiteral("□"), QStringLiteral("R"), CanvasView::Tool::Rectangle));
     tools->addAction(addToolAction(QStringLiteral("○"), QStringLiteral("E"), CanvasView::Tool::Ellipse));
     tools->addAction(addToolAction(QStringLiteral("╱"), QStringLiteral("L"), CanvasView::Tool::Line));
@@ -220,7 +294,30 @@ void MainWindow::buildCentralCanvas()
 
 void MainWindow::buildDockers()
 {
-    auto *objectsDock = new QDockWidget(QStringLiteral("对象与图层"), this); m_objectList = new QListWidget; objectsDock->setWidget(m_objectList); addDockWidget(Qt::RightDockWidgetArea, objectsDock);
+    auto *objectsDock = new QDockWidget(QStringLiteral("对象与图层"), this);
+    auto *objectPanel = new QWidget;
+    auto *objectLayout = new QVBoxLayout(objectPanel);
+    objectLayout->setContentsMargins(6, 6, 6, 6);
+    objectLayout->addWidget(new QLabel(QStringLiteral("当前图层")));
+    m_layerList = new QListWidget;
+    m_layerList->setMaximumHeight(150);
+    objectLayout->addWidget(m_layerList);
+    auto *layerButtons = new QHBoxLayout;
+    auto *addLayerButton = new QPushButton(QStringLiteral("+"));
+    auto *renameLayerButton = new QPushButton(QStringLiteral("改名"));
+    auto *visibleLayerButton = new QPushButton(QStringLiteral("显隐"));
+    auto *lockLayerButton = new QPushButton(QStringLiteral("锁定"));
+    layerButtons->addWidget(addLayerButton); layerButtons->addWidget(renameLayerButton);
+    layerButtons->addWidget(visibleLayerButton); layerButtons->addWidget(lockLayerButton);
+    objectLayout->addLayout(layerButtons);
+    objectLayout->addWidget(new QLabel(QStringLiteral("对象列表")));
+    m_objectList = new QListWidget;
+    objectLayout->addWidget(m_objectList, 1);
+    connect(addLayerButton, &QPushButton::clicked, this, &MainWindow::addLayer);
+    connect(renameLayerButton, &QPushButton::clicked, this, &MainWindow::renameLayer);
+    connect(visibleLayerButton, &QPushButton::clicked, this, &MainWindow::toggleLayerVisible);
+    connect(lockLayerButton, &QPushButton::clicked, this, &MainWindow::toggleLayerLocked);
+    objectsDock->setWidget(objectPanel); addDockWidget(Qt::RightDockWidgetArea, objectsDock);
     objectsDock->setMinimumWidth(270);
 
     auto *productionDock = new QDockWidget(QStringLiteral("生产与导出"), this); auto *panel = new QWidget; auto *layout = new QVBoxLayout(panel);
@@ -242,8 +339,14 @@ void MainWindow::connectSignals()
     connect(m_canvas, &CanvasView::toolChanged, this, [this](CanvasView::Tool tool) { setStatus(toolName(tool)); });
     connect(m_fillButton, &QToolButton::clicked, this, &MainWindow::chooseFillColor); connect(m_strokeButton, &QToolButton::clicked, this, &MainWindow::chooseStrokeColor);
     connect(m_objectList, &QListWidget::currentRowChanged, this, [this](int row) {
-        if (row < 0) return; QList<QGraphicsItem *> roots; for (QGraphicsItem *item : m_canvas->scene()->items(Qt::DescendingOrder)) if (!item->parentItem() && !item->data(KindRole).toString().isEmpty()) roots.append(item); if (row >= roots.size()) return;
+        if (row < 0) return; QList<QGraphicsItem *> roots; for (QGraphicsItem *item : m_canvas->scene()->items(Qt::DescendingOrder)) if (!item->parentItem() && !item->data(KindRole).toString().isEmpty() && (item->data(LayerRole).toString().isEmpty() ? QStringLiteral("图层 1") : item->data(LayerRole).toString()) == m_currentLayer) roots.append(item); if (row >= roots.size()) return;
         m_canvas->scene()->clearSelection(); roots[row]->setSelected(true); m_canvas->centerOn(roots[row]);
+    });
+    connect(m_layerList, &QListWidget::currentItemChanged, this, [this](QListWidgetItem *current) {
+        if (!current) return;
+        m_currentLayer = current->data(Qt::UserRole).toString();
+        m_canvas->setActiveLayer(m_currentLayer);
+        updateObjectList();
     });
 }
 
@@ -258,10 +361,14 @@ void MainWindow::updateObjectList()
     m_objectList->blockSignals(true); m_objectList->clear();
     for (QGraphicsItem *item : m_canvas->scene()->items(Qt::DescendingOrder)) {
         if (item->parentItem()) continue; const QString kind = item->data(KindRole).toString(); if (kind.isEmpty()) continue;
-        auto *row = new QListWidgetItem(itemIcon(kind) + QStringLiteral("  ") + item->data(NameRole).toString()); row->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(reinterpret_cast<qulonglong>(item))); m_objectList->addItem(row);
+        const QString layer = item->data(LayerRole).toString().isEmpty() ? QStringLiteral("图层 1") : item->data(LayerRole).toString();
+        if (layer != m_currentLayer) continue;
+        const QString state = item->data(LockedRole).toBool() ? QStringLiteral("🔒 ") : QString();
+        auto *row = new QListWidgetItem(state + itemIcon(kind) + QStringLiteral("  ") + item->data(NameRole).toString()); row->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(reinterpret_cast<qulonglong>(item))); m_objectList->addItem(row);
         if (item->isSelected()) m_objectList->setCurrentItem(row);
     }
     m_objectList->blockSignals(false);
+    updateLayerList();
 }
 
 void MainWindow::updateInspector()
@@ -296,13 +403,13 @@ void MainWindow::recordHistory(const QString &)
 void MainWindow::restoreHistory(int index)
 {
     if (index < 0 || index >= m_history.size()) return; m_restoring = true; QRectF page; QString error;
-    if (DocumentIO::restoreDocument(m_canvas->scene(), m_history[index], &page, &error)) { m_canvas->setPageRect(page); m_historyIndex = index; m_modified = true; updateObjectList(); updateWindowTitle(); setStatus(QStringLiteral("历史记录已恢复")); }
+    if (DocumentIO::restoreDocument(m_canvas->scene(), m_history[index], &page, &error)) { m_canvas->setPageRect(page); m_historyIndex = index; m_modified = true; applyLayerState(); updateWindowTitle(); setStatus(QStringLiteral("历史记录已恢复")); }
     m_restoring = false;
 }
 
 void MainWindow::newDocument()
 {
-    if (!maybeSave()) return; m_restoring = true; m_canvas->scene()->clear(); m_canvas->setPageRect({100, 100, 800, 600}); m_fileName.clear(); m_modified = false; m_history.clear(); m_historyIndex = -1; m_restoring = false;
+    if (!maybeSave()) return; m_restoring = true; m_canvas->scene()->clear(); m_canvas->setPageRect({100, 100, 800, 600}); m_fileName.clear(); m_modified = false; m_history.clear(); m_historyIndex = -1; m_currentLayer = QStringLiteral("图层 1"); m_canvas->setActiveLayer(m_currentLayer); m_restoring = false;
     recordHistory(QStringLiteral("新建文档")); setCurrentTool(CanvasView::Tool::Select); m_canvas->zoomToFit(); updateObjectList(); updateWindowTitle(); setStatus(QStringLiteral("已新建800×600页面"));
 }
 
@@ -324,7 +431,7 @@ void MainWindow::openDocument()
 {
     if (!maybeSave()) return; const QString fileName = QFileDialog::getOpenFileName(this, QStringLiteral("打开匠心矢量文档"), {}, QStringLiteral("匠心矢量文档 (*.jxv)")); if (fileName.isEmpty()) return;
     QString error; const QJsonObject document = DocumentIO::loadFile(fileName, &error); QRectF page; if (document.isEmpty() || !DocumentIO::restoreDocument(m_canvas->scene(), document, &page, &error)) { QMessageBox::critical(this, QStringLiteral("打开失败"), error); return; }
-    m_canvas->setPageRect(page); m_fileName = fileName; m_modified = false; m_history.clear(); m_historyIndex = -1; recordHistory(QStringLiteral("打开文档")); m_canvas->zoomToFit(); updateObjectList(); updateWindowTitle();
+    m_canvas->setPageRect(page); m_fileName = fileName; m_modified = false; m_history.clear(); m_historyIndex = -1; recordHistory(QStringLiteral("打开文档")); m_canvas->zoomToFit(); applyLayerState(); updateWindowTitle();
 }
 
 void MainWindow::renderForExport(QPainter *painter, const QRectF &target)
@@ -363,7 +470,7 @@ void MainWindow::copySelection()
 
 void MainWindow::pasteSelection()
 {
-    if (m_clipboard.isEmpty()) return; m_canvas->scene()->clearSelection(); const auto items = DocumentIO::restoreItems(m_canvas->scene(), m_clipboard, {20, 20}); for (QGraphicsItem *item : items) item->setSelected(true); markModified(QStringLiteral("粘贴对象"));
+    if (m_clipboard.isEmpty()) return; m_canvas->scene()->clearSelection(); const auto items = DocumentIO::restoreItems(m_canvas->scene(), m_clipboard, {20, 20}); for (QGraphicsItem *item : items) { item->setData(LayerRole, m_currentLayer); item->setSelected(true); } markModified(QStringLiteral("粘贴对象"));
 }
 
 void MainWindow::duplicateSelection() { copySelection(); pasteSelection(); }
@@ -371,12 +478,121 @@ void MainWindow::duplicateSelection() { copySelection(); pasteSelection(); }
 void MainWindow::groupSelection()
 {
     const auto selected = m_canvas->scene()->selectedItems(); if (selected.size() < 2) { setStatus(QStringLiteral("请至少选择两个对象")); return; }
-    auto *group = m_canvas->scene()->createItemGroup(selected); group->setData(KindRole, QStringLiteral("group")); group->setData(NameRole, QStringLiteral("组合对象")); group->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemIsFocusable); group->setSelected(true); markModified(QStringLiteral("组合对象"));
+    auto *group = m_canvas->scene()->createItemGroup(selected); group->setData(KindRole, QStringLiteral("group")); group->setData(NameRole, QStringLiteral("组合对象")); group->setData(LayerRole, m_currentLayer); group->setData(VisibleRole, true); group->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemIsFocusable); group->setSelected(true); markModified(QStringLiteral("组合对象"));
 }
 
 void MainWindow::ungroupSelection()
 {
     const auto selected = m_canvas->scene()->selectedItems(); bool changed = false; for (QGraphicsItem *item : selected) if (auto *group = dynamic_cast<QGraphicsItemGroup *>(item)) { m_canvas->scene()->destroyItemGroup(group); changed = true; } if (changed) markModified(QStringLiteral("取消组合"));
+}
+
+void MainWindow::convertSelectionToPath()
+{
+    QList<QGraphicsItem *> roots;
+    for (QGraphicsItem *item : m_canvas->scene()->selectedItems()) if (!item->parentItem()) roots.append(item);
+    if (roots.isEmpty()) return;
+    m_canvas->scene()->clearSelection();
+    for (QGraphicsItem *item : roots) {
+        if (item->data(KindRole).toString() == QStringLiteral("path")) { item->setSelected(true); continue; }
+        const QPainterPath path = sceneItemPath(item);
+        const QBrush brush = itemBrush(item); const QPen pen = itemPen(item);
+        const QString layer = item->data(LayerRole).toString().isEmpty() ? m_currentLayer : item->data(LayerRole).toString();
+        m_canvas->scene()->removeItem(item); delete item;
+        auto *curve = new QGraphicsPathItem(path); curve->setBrush(brush); curve->setPen(pen);
+        curve->setData(KindRole, QStringLiteral("path")); curve->setData(NameRole, QStringLiteral("曲线对象"));
+        curve->setData(LayerRole, layer); curve->setData(VisibleRole, true);
+        curve->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable);
+        m_canvas->scene()->addItem(curve); curve->setSelected(true);
+    }
+    markModified(QStringLiteral("已转换为曲线，可使用节点工具编辑"));
+    setCurrentTool(CanvasView::Tool::Node);
+}
+
+void MainWindow::booleanSelection(int operation)
+{
+    QList<QGraphicsItem *> items;
+    for (QGraphicsItem *item : m_canvas->scene()->selectedItems()) if (!item->parentItem()) items.append(item);
+    if (items.size() < 2) { setStatus(QStringLiteral("布尔造型需要至少两个对象")); return; }
+    std::sort(items.begin(), items.end(), [](QGraphicsItem *a, QGraphicsItem *b) { return a->zValue() > b->zValue(); });
+    QPainterPath result;
+    if (operation == 0 || operation == 3) {
+        result = sceneItemPath(items.first());
+        for (int i = 1; i < items.size(); ++i) result = result.united(sceneItemPath(items[i]));
+        if (operation == 3) result = result.simplified();
+    } else if (operation == 2) {
+        result = sceneItemPath(items.first());
+        for (int i = 1; i < items.size(); ++i) result = result.intersected(sceneItemPath(items[i]));
+    } else {
+        QGraphicsItem *base = operation == 4 ? items.first() : items.last();
+        QPainterPath cutters;
+        for (QGraphicsItem *item : items) if (item != base) cutters = cutters.united(sceneItemPath(item));
+        result = sceneItemPath(base).subtracted(cutters);
+    }
+    if (result.isEmpty()) { setStatus(QStringLiteral("造型结果为空，请检查对象重叠区域")); return; }
+    QGraphicsItem *styleSource = items.first(); const QBrush brush = itemBrush(styleSource); const QPen pen = itemPen(styleSource);
+    const QString layer = styleSource->data(LayerRole).toString().isEmpty() ? m_currentLayer : styleSource->data(LayerRole).toString();
+    for (QGraphicsItem *item : items) { m_canvas->scene()->removeItem(item); delete item; }
+    auto *shape = new QGraphicsPathItem(result); shape->setBrush(brush); shape->setPen(pen);
+    shape->setData(KindRole, QStringLiteral("path")); shape->setData(NameRole, QStringLiteral("布尔造型结果"));
+    shape->setData(LayerRole, layer); shape->setData(VisibleRole, true);
+    shape->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable);
+    m_canvas->scene()->addItem(shape); shape->setSelected(true);
+    static const QStringList names {QStringLiteral("焊接"), QStringLiteral("修剪"), QStringLiteral("相交"), QStringLiteral("简化"), QStringLiteral("前减后"), QStringLiteral("后减前")};
+    markModified(QStringLiteral("布尔造型：") + names.value(operation));
+}
+
+void MainWindow::transformSelection(int operation)
+{
+    const auto selected = m_canvas->scene()->selectedItems(); if (selected.isEmpty()) return;
+    for (QGraphicsItem *item : selected) {
+        const QPointF center = item->boundingRect().center();
+        QTransform transform; transform.translate(center.x(), center.y());
+        if (operation == 0) transform.scale(-1.0, 1.0);
+        else if (operation == 1) transform.scale(1.0, -1.0);
+        else transform.rotate(operation == 2 ? 90.0 : -90.0);
+        transform.translate(-center.x(), -center.y()); item->setTransform(transform, true);
+    }
+    markModified(QStringLiteral("对象变换完成"));
+}
+
+void MainWindow::clipSelection()
+{
+    QList<QGraphicsItem *> items;
+    for (QGraphicsItem *item : m_canvas->scene()->selectedItems()) if (!item->parentItem()) items.append(item);
+    if (items.size() < 2) { setStatus(QStringLiteral("请同时选择图框和至少一个内容对象")); return; }
+    std::sort(items.begin(), items.end(), [](QGraphicsItem *a, QGraphicsItem *b) { return a->zValue() < b->zValue(); });
+    QGraphicsItem *frame = items.takeFirst();
+    const QPainterPath framePath = sceneItemPath(frame); const QBrush brush = itemBrush(frame); const QPen pen = itemPen(frame);
+    const QString layer = frame->data(LayerRole).toString().isEmpty() ? m_currentLayer : frame->data(LayerRole).toString();
+    m_canvas->scene()->removeItem(frame); delete frame;
+    auto *clip = new QGraphicsPathItem(framePath); clip->setBrush(brush); clip->setPen(pen);
+    clip->setFlag(QGraphicsItem::ItemClipsChildrenToShape, true);
+    clip->setFlags(clip->flags() | QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable);
+    clip->setData(KindRole, QStringLiteral("clip")); clip->setData(NameRole, QStringLiteral("图框精确裁剪")); clip->setData(LayerRole, layer); clip->setData(VisibleRole, true);
+    m_canvas->scene()->addItem(clip);
+    for (QGraphicsItem *content : items) {
+        const QTransform sceneTransform = content->sceneTransform();
+        content->setParentItem(clip); content->setPos(0, 0); content->setRotation(0); content->setTransform(sceneTransform);
+    }
+    m_canvas->scene()->clearSelection(); clip->setSelected(true); markModified(QStringLiteral("内容已置于图框内部"));
+}
+
+void MainWindow::releaseClip()
+{
+    const auto selected = m_canvas->scene()->selectedItems(); bool changed = false;
+    for (QGraphicsItem *item : selected) {
+        auto *clip = dynamic_cast<QGraphicsPathItem *>(item);
+        if (!clip || item->data(KindRole).toString() != QStringLiteral("clip")) continue;
+        const auto children = clip->childItems();
+        for (QGraphicsItem *child : children) {
+            const QTransform sceneTransform = child->sceneTransform();
+            child->setParentItem(nullptr); child->setPos(0, 0); child->setRotation(0); child->setTransform(sceneTransform);
+            child->setData(LayerRole, item->data(LayerRole));
+        }
+        clip->setFlag(QGraphicsItem::ItemClipsChildrenToShape, false); clip->setData(KindRole, QStringLiteral("path")); clip->setData(NameRole, QStringLiteral("图框曲线"));
+        changed = true;
+    }
+    if (changed) markModified(QStringLiteral("已提取图框内容"));
 }
 
 void MainWindow::arrangeSelection(int direction)
@@ -390,6 +606,81 @@ void MainWindow::alignSelection(Qt::Alignment alignment)
     const auto selected = m_canvas->scene()->selectedItems(); if (selected.isEmpty()) return; const QRectF target = selected.size() == 1 ? m_canvas->pageRect() : selected.last()->sceneBoundingRect();
     for (QGraphicsItem *item : selected) { const QRectF b = item->sceneBoundingRect(); qreal dx = 0, dy = 0; if (alignment.testFlag(Qt::AlignLeft)) dx = target.left() - b.left(); else if (alignment.testFlag(Qt::AlignHCenter)) dx = target.center().x() - b.center().x(); else if (alignment.testFlag(Qt::AlignRight)) dx = target.right() - b.right(); if (alignment.testFlag(Qt::AlignTop)) dy = target.top() - b.top(); else if (alignment.testFlag(Qt::AlignVCenter)) dy = target.center().y() - b.center().y(); else if (alignment.testFlag(Qt::AlignBottom)) dy = target.bottom() - b.bottom(); item->moveBy(dx, dy); }
     markModified(QStringLiteral("对象对齐完成"));
+}
+
+void MainWindow::distributeSelection(bool horizontal)
+{
+    QList<QGraphicsItem *> items = m_canvas->scene()->selectedItems();
+    if (items.size() < 3) { setStatus(QStringLiteral("等距分布需要至少三个对象")); return; }
+    std::sort(items.begin(), items.end(), [horizontal](QGraphicsItem *a, QGraphicsItem *b) {
+        return horizontal ? a->sceneBoundingRect().center().x() < b->sceneBoundingRect().center().x()
+                          : a->sceneBoundingRect().center().y() < b->sceneBoundingRect().center().y();
+    });
+    const qreal start = horizontal ? items.first()->sceneBoundingRect().center().x() : items.first()->sceneBoundingRect().center().y();
+    const qreal end = horizontal ? items.last()->sceneBoundingRect().center().x() : items.last()->sceneBoundingRect().center().y();
+    const qreal step = (end - start) / (items.size() - 1);
+    for (int i = 1; i + 1 < items.size(); ++i) {
+        const QRectF bounds = items[i]->sceneBoundingRect(); const qreal current = horizontal ? bounds.center().x() : bounds.center().y();
+        if (horizontal) items[i]->moveBy(start + step * i - current, 0); else items[i]->moveBy(0, start + step * i - current);
+    }
+    markModified(horizontal ? QStringLiteral("水平等距分布完成") : QStringLiteral("垂直等距分布完成"));
+}
+
+void MainWindow::updateLayerList()
+{
+    if (!m_layerList) return;
+    QSet<QString> layers; layers.insert(QStringLiteral("图层 1")); layers.insert(m_currentLayer);
+    for (QGraphicsItem *item : m_canvas->scene()->items()) if (!item->parentItem() && !item->data(KindRole).toString().isEmpty()) layers.insert(item->data(LayerRole).toString().isEmpty() ? QStringLiteral("图层 1") : item->data(LayerRole).toString());
+    QStringList names = layers.values(); names.sort(Qt::CaseInsensitive);
+    m_layerList->blockSignals(true); m_layerList->clear();
+    for (const QString &name : names) {
+        bool visible = true, locked = false;
+        for (QGraphicsItem *item : m_canvas->scene()->items()) if (!item->parentItem() && (item->data(LayerRole).toString().isEmpty() ? QStringLiteral("图层 1") : item->data(LayerRole).toString()) == name) { visible = !item->data(VisibleRole).isValid() || item->data(VisibleRole).toBool(); locked = item->data(LockedRole).toBool(); break; }
+        auto *row = new QListWidgetItem(QStringLiteral("%1 %2 %3").arg(visible ? QStringLiteral("👁") : QStringLiteral("○"), locked ? QStringLiteral("🔒") : QStringLiteral("  "), name));
+        row->setData(Qt::UserRole, name); row->setData(Qt::UserRole + 1, visible); row->setData(Qt::UserRole + 2, locked); m_layerList->addItem(row);
+        if (name == m_currentLayer) m_layerList->setCurrentItem(row);
+    }
+    m_layerList->blockSignals(false);
+}
+
+void MainWindow::addLayer()
+{
+    bool ok = false; const QString suggested = QStringLiteral("图层 %1").arg(m_layerList->count() + 1);
+    const QString name = QInputDialog::getText(this, QStringLiteral("新建图层"), QStringLiteral("图层名称"), QLineEdit::Normal, suggested, &ok).trimmed();
+    if (!ok || name.isEmpty()) return; m_currentLayer = name; m_canvas->setActiveLayer(name); updateLayerList(); setStatus(QStringLiteral("已新建图层：") + name);
+}
+
+void MainWindow::renameLayer()
+{
+    if (!m_layerList->currentItem()) return; const QString oldName = m_currentLayer; bool ok = false;
+    const QString name = QInputDialog::getText(this, QStringLiteral("重命名图层"), QStringLiteral("新名称"), QLineEdit::Normal, oldName, &ok).trimmed();
+    if (!ok || name.isEmpty() || name == oldName) return;
+    for (QGraphicsItem *item : m_canvas->scene()->items()) if (!item->parentItem() && (item->data(LayerRole).toString().isEmpty() ? QStringLiteral("图层 1") : item->data(LayerRole).toString()) == oldName) item->setData(LayerRole, name);
+    m_currentLayer = name; m_canvas->setActiveLayer(name); markModified(QStringLiteral("图层已重命名"));
+}
+
+void MainWindow::toggleLayerVisible()
+{
+    if (!m_layerList->currentItem()) return; const bool visible = !m_layerList->currentItem()->data(Qt::UserRole + 1).toBool();
+    for (QGraphicsItem *item : m_canvas->scene()->items()) if (!item->parentItem() && (item->data(LayerRole).toString().isEmpty() ? QStringLiteral("图层 1") : item->data(LayerRole).toString()) == m_currentLayer) item->setData(VisibleRole, visible);
+    applyLayerState(); markModified(visible ? QStringLiteral("图层已显示") : QStringLiteral("图层已隐藏"));
+}
+
+void MainWindow::toggleLayerLocked()
+{
+    if (!m_layerList->currentItem()) return; const bool locked = !m_layerList->currentItem()->data(Qt::UserRole + 2).toBool();
+    for (QGraphicsItem *item : m_canvas->scene()->items()) if (!item->parentItem() && (item->data(LayerRole).toString().isEmpty() ? QStringLiteral("图层 1") : item->data(LayerRole).toString()) == m_currentLayer) item->setData(LockedRole, locked);
+    applyLayerState(); markModified(locked ? QStringLiteral("图层已锁定") : QStringLiteral("图层已解锁"));
+}
+
+void MainWindow::applyLayerState()
+{
+    for (QGraphicsItem *item : m_canvas->scene()->items()) {
+        if (item->parentItem() || item->data(KindRole).toString().isEmpty()) continue;
+        const bool visible = !item->data(VisibleRole).isValid() || item->data(VisibleRole).toBool(); const bool locked = item->data(LockedRole).toBool();
+        item->setVisible(visible); item->setFlag(QGraphicsItem::ItemIsSelectable, !locked); item->setFlag(QGraphicsItem::ItemIsMovable, !locked); if (locked) item->setSelected(false);
+    }
+    updateObjectList();
 }
 
 void MainWindow::applyInspector()
@@ -411,7 +702,7 @@ void MainWindow::chooseStrokeColor()
 
 void MainWindow::updateWindowTitle()
 {
-    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.0 Native").arg(m_modified ? "*" : "", name));
+    const QString name = m_fileName.isEmpty() ? QStringLiteral("未命名.jxv") : QFileInfo(m_fileName).fileName(); setWindowTitle(QStringLiteral("%1%2 — 匠心矢量设计 1.1 Native").arg(m_modified ? "*" : "", name));
 }
 
 void MainWindow::setStatus(const QString &message) { if (m_statusLabel) m_statusLabel->setText(message); }
