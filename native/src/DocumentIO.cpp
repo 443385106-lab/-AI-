@@ -15,6 +15,9 @@
 namespace {
 constexpr int KindRole = 0;
 constexpr int NameRole = 1;
+constexpr int LayerRole = 2;
+constexpr int LockedRole = 3;
+constexpr int VisibleRole = 4;
 
 QJsonObject rectToJson(const QRectF &rect)
 {
@@ -50,9 +53,38 @@ QPen penFromJson(const QJsonObject &j)
             Qt::RoundCap, Qt::RoundJoin};
 }
 
+QJsonArray pathToJson(const QPainterPath &path)
+{
+    QJsonArray elements;
+    for (int i = 0; i < path.elementCount(); ++i) {
+        const auto e = path.elementAt(i);
+        elements.append(QJsonObject {{"x", e.x}, {"y", e.y}, {"type", static_cast<int>(e.type)}});
+    }
+    return elements;
+}
+
+QPainterPath pathFromJson(const QJsonArray &elements)
+{
+    QPainterPath path;
+    for (int i = 0; i < elements.size(); ++i) {
+        const QJsonObject object = elements[i].toObject();
+        const QPointF point(object["x"].toDouble(), object["y"].toDouble());
+        const int type = object["type"].toInt(static_cast<int>(QPainterPath::LineToElement));
+        if (type == QPainterPath::MoveToElement) path.moveTo(point);
+        else if (type == QPainterPath::LineToElement) path.lineTo(point);
+        else if (type == QPainterPath::CurveToElement && i + 2 < elements.size()) {
+            const QJsonObject c2 = elements[++i].toObject(); const QJsonObject end = elements[++i].toObject();
+            path.cubicTo(point, QPointF(c2["x"].toDouble(), c2["y"].toDouble()), QPointF(end["x"].toDouble(), end["y"].toDouble()));
+        }
+    }
+    return path;
+}
+
 QJsonObject baseItemJson(QGraphicsItem *item)
 {
     return {{"kind", item->data(KindRole).toString()}, {"name", item->data(NameRole).toString()},
+            {"layer", item->data(LayerRole).toString()}, {"locked", item->data(LockedRole).toBool()},
+            {"visible", !item->data(VisibleRole).isValid() || item->data(VisibleRole).toBool()},
             {"x", item->pos().x()}, {"y", item->pos().y()}, {"rotation", item->rotation()},
             {"z", item->zValue()}, {"opacity", item->opacity()}, {"transform", transformToJson(item->transform())}};
 }
@@ -73,14 +105,12 @@ QJsonObject serializeOne(QGraphicsItem *item)
         const auto *shape = static_cast<QGraphicsLineItem *>(item);
         const QLineF line = shape->line();
         json["line"] = QJsonArray {line.x1(), line.y1(), line.x2(), line.y2()}; json["pen"] = penToJson(shape->pen());
-    } else if (kind == "path") {
+    } else if (kind == "path" || kind == "clip") {
         const auto *shape = static_cast<QGraphicsPathItem *>(item);
-        QJsonArray elements;
-        for (int i = 0; i < shape->path().elementCount(); ++i) {
-            const auto e = shape->path().elementAt(i);
-            elements.append(QJsonObject {{"x", e.x}, {"y", e.y}, {"type", static_cast<int>(e.type)}});
-        }
-        json["path"] = elements; json["pen"] = penToJson(shape->pen());
+        json["path"] = pathToJson(shape->path()); json["pen"] = penToJson(shape->pen());
+        json["fill"] = shape->brush().color().name(QColor::HexArgb);
+        json["fillStyle"] = static_cast<int>(shape->brush().style());
+        if (kind == "clip") json["children"] = DocumentIO::serializeItems(item->childItems());
     } else if (kind == "text") {
         const auto *text = static_cast<QGraphicsTextItem *>(item);
         json["text"] = text->toPlainText(); json["color"] = text->defaultTextColor().name(QColor::HexArgb);
@@ -96,11 +126,15 @@ void applyBase(QGraphicsItem *item, const QJsonObject &json, const QPointF &offs
 {
     item->setData(KindRole, json["kind"].toString());
     item->setData(NameRole, json["name"].toString());
+    item->setData(LayerRole, json["layer"].toString("图层 1"));
+    item->setData(LockedRole, json["locked"].toBool()); item->setData(VisibleRole, json["visible"].toBool(true));
     item->setPos(json["x"].toDouble() + offset.x(), json["y"].toDouble() + offset.y());
     item->setRotation(json["rotation"].toDouble()); item->setZValue(json["z"].toDouble());
     item->setOpacity(json["opacity"].toDouble(1.0)); item->setTransform(transformFromJson(json["transform"].toObject()));
     item->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable |
                    QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable);
+    item->setVisible(json["visible"].toBool(true));
+    if (json["locked"].toBool()) item->setFlags(QGraphicsItem::ItemIsFocusable);
 }
 
 QGraphicsItem *restoreOne(QGraphicsScene *scene, const QJsonObject &json, const QPointF &offset)
@@ -117,10 +151,12 @@ QGraphicsItem *restoreOne(QGraphicsScene *scene, const QJsonObject &json, const 
         const QJsonArray a = json["line"].toArray(); if (a.size() != 4) return nullptr;
         auto *shape = new QGraphicsLineItem(QLineF(a[0].toDouble(), a[1].toDouble(), a[2].toDouble(), a[3].toDouble()));
         shape->setPen(penFromJson(json["pen"].toObject())); item = shape;
-    } else if (kind == "path") {
-        QPainterPath path; const QJsonArray a = json["path"].toArray();
-        for (int i = 0; i < a.size(); ++i) { const QJsonObject e = a[i].toObject(); if (i == 0) path.moveTo(e["x"].toDouble(), e["y"].toDouble()); else path.lineTo(e["x"].toDouble(), e["y"].toDouble()); }
-        auto *shape = new QGraphicsPathItem(path); shape->setPen(penFromJson(json["pen"].toObject())); item = shape;
+    } else if (kind == "path" || kind == "clip") {
+        auto *shape = new QGraphicsPathItem(pathFromJson(json["path"].toArray()));
+        shape->setPen(penFromJson(json["pen"].toObject()));
+        QBrush brush(QColor(json["fill"].toString("#00000000")));
+        brush.setStyle(static_cast<Qt::BrushStyle>(json["fillStyle"].toInt(static_cast<int>(Qt::NoBrush))));
+        shape->setBrush(brush); item = shape;
     } else if (kind == "text") {
         auto *text = new QGraphicsTextItem(json["text"].toString()); const QJsonObject f = json["font"].toObject();
         QFont font(f["family"].toString("Microsoft YaHei")); font.setPointSizeF(f["size"].toDouble(24.0)); font.setBold(f["bold"].toBool()); font.setItalic(f["italic"].toBool());
@@ -132,7 +168,13 @@ QGraphicsItem *restoreOne(QGraphicsScene *scene, const QJsonObject &json, const 
         return group;
     }
     if (!item) return nullptr;
-    scene->addItem(item); applyBase(item, json, offset); return item;
+    scene->addItem(item); applyBase(item, json, offset);
+    if (kind == "clip") {
+        item->setFlag(QGraphicsItem::ItemClipsChildrenToShape, true);
+        const auto children = DocumentIO::restoreItems(scene, json["children"].toArray());
+        for (QGraphicsItem *child : children) child->setParentItem(item);
+    }
+    return item;
 }
 }
 
@@ -140,7 +182,7 @@ QJsonObject DocumentIO::serializeDocument(QGraphicsScene *scene, const QRectF &p
 {
     QList<QGraphicsItem *> roots;
     for (QGraphicsItem *item : scene->items(Qt::AscendingOrder)) if (!item->parentItem()) roots.append(item);
-    return {{"format", "JiangxinVectorDocument"}, {"version", 1}, {"page", rectToJson(pageRect)},
+    return {{"format", "JiangxinVectorDocument"}, {"version", 2}, {"page", rectToJson(pageRect)},
             {"items", serializeItems(roots)}};
 }
 
@@ -156,7 +198,7 @@ bool DocumentIO::restoreDocument(QGraphicsScene *scene, const QJsonObject &docum
 
 QJsonArray DocumentIO::serializeItems(const QList<QGraphicsItem *> &items)
 {
-    QJsonArray array; for (QGraphicsItem *item : items) array.append(serializeOne(item)); return array;
+    QJsonArray array; for (QGraphicsItem *item : items) if (!item->data(KindRole).toString().isEmpty()) array.append(serializeOne(item)); return array;
 }
 
 QList<QGraphicsItem *> DocumentIO::restoreItems(QGraphicsScene *scene, const QJsonArray &items, const QPointF &offset)
