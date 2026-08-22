@@ -1,4 +1,5 @@
 #include "CanvasView.hpp"
+#include "PathNodeHandle.hpp"
 
 #include <QGraphicsEllipseItem>
 #include <QGraphicsLineItem>
@@ -17,6 +18,8 @@
 namespace {
 constexpr int KindRole = 0;
 constexpr int NameRole = 1;
+constexpr int LayerRole = 2;
+constexpr int VisibleRole = 4;
 }
 
 CanvasView::CanvasView(QWidget *parent) : QGraphicsView(parent)
@@ -34,10 +37,14 @@ CanvasView::CanvasView(QWidget *parent) : QGraphicsView(parent)
     setMouseTracking(true);
     connect(horizontalScrollBar(), &QScrollBar::valueChanged, this, &CanvasView::viewChanged);
     connect(verticalScrollBar(), &QScrollBar::valueChanged, this, &CanvasView::viewChanged);
+    connect(graphicsScene, &QGraphicsScene::selectionChanged, this, [this] {
+        if (m_tool == Tool::Node) rebuildNodeHandles();
+    });
 }
 
 void CanvasView::setTool(Tool tool)
 {
+    if (m_tool == Tool::Bezier && tool != Tool::Bezier && m_bezierItem) finishBezier(false);
     m_tool = tool;
     setDragMode(tool == Tool::Select ? QGraphicsView::RubberBandDrag
                                     : tool == Tool::Pan ? QGraphicsView::ScrollHandDrag
@@ -47,6 +54,7 @@ void CanvasView::setTool(Tool tool)
                           : tool == Tool::Pan ? Qt::OpenHandCursor
                           : tool == Tool::Select || tool == Tool::Node ? Qt::ArrowCursor
                                                                     : Qt::CrossCursor);
+    if (tool == Tool::Node) rebuildNodeHandles(); else clearNodeHandles();
     Q_EMIT toolChanged(tool);
 }
 
@@ -147,6 +155,8 @@ void CanvasView::prepareItem(QGraphicsItem *item, const QString &kind, const QSt
 {
     item->setData(KindRole, kind);
     item->setData(NameRole, name);
+    item->setData(LayerRole, m_activeLayer);
+    item->setData(VisibleRole, true);
     item->setFlags(QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemIsMovable |
                    QGraphicsItem::ItemSendsGeometryChanges | QGraphicsItem::ItemIsFocusable);
     scene()->addItem(item);
@@ -183,6 +193,25 @@ void CanvasView::mousePressEvent(QMouseEvent *event)
             item->setPos(point);
             prepareItem(item, QStringLiteral("text"), text.left(20));
             Q_EMIT documentCommitted(QStringLiteral("添加文字"));
+        }
+        return;
+    }
+
+    if (m_tool == Tool::Bezier) {
+        const QPen pen(m_strokeColor, m_strokeWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        if (!m_bezierItem) {
+            m_bezierPath = QPainterPath(point);
+            m_bezierItem = new QGraphicsPathItem(m_bezierPath);
+            m_bezierItem->setPen(pen);
+            m_bezierItem->setBrush(Qt::NoBrush);
+            prepareItem(m_bezierItem, QStringLiteral("path"), QStringLiteral("贝塞尔曲线"));
+            m_bezierAnchorCount = 1;
+        } else {
+            const QPointF previous = m_bezierPath.currentPosition();
+            const QPointF delta = point - previous;
+            m_bezierPath.cubicTo(previous + delta / 3.0, point - delta / 3.0, point);
+            m_bezierItem->setPath(m_bezierPath);
+            ++m_bezierAnchorCount;
         }
         return;
     }
@@ -248,6 +277,17 @@ void CanvasView::mouseReleaseEvent(QMouseEvent *event)
     if (m_tool == Tool::Select || m_tool == Tool::Node) Q_EMIT documentCommitted(QStringLiteral("对象操作"));
 }
 
+void CanvasView::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (m_tool == Tool::Bezier && event->button() == Qt::LeftButton && m_bezierItem) {
+        const bool openPath = event->modifiers().testFlag(Qt::ShiftModifier);
+        finishBezier(!openPath);
+        event->accept();
+        return;
+    }
+    QGraphicsView::mouseDoubleClickEvent(event);
+}
+
 void CanvasView::wheelEvent(QWheelEvent *event)
 {
     if (event->modifiers().testFlag(Qt::ControlModifier)) {
@@ -260,6 +300,16 @@ void CanvasView::wheelEvent(QWheelEvent *event)
 
 void CanvasView::keyPressEvent(QKeyEvent *event)
 {
+    if (m_tool == Tool::Bezier && m_bezierItem) {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            finishBezier(false);
+            return;
+        }
+        if (event->key() == Qt::Key_Escape) {
+            finishBezier(false, false);
+            return;
+        }
+    }
     if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) {
         deleteSelection();
         return;
@@ -278,9 +328,52 @@ void CanvasView::keyPressEvent(QKeyEvent *event)
     QGraphicsView::keyPressEvent(event);
 }
 
+void CanvasView::finishBezier(bool closePath, bool commit)
+{
+    if (!m_bezierItem) return;
+    if (m_bezierAnchorCount < 2 || !commit) {
+        scene()->removeItem(m_bezierItem);
+        delete m_bezierItem;
+    } else {
+        if (closePath) {
+            m_bezierPath.closeSubpath();
+            m_bezierItem->setBrush(m_fillColor);
+        }
+        m_bezierItem->setPath(m_bezierPath);
+        Q_EMIT documentCommitted(QStringLiteral("绘制贝塞尔曲线"));
+    }
+    m_bezierItem = nullptr;
+    m_bezierPath = QPainterPath();
+    m_bezierAnchorCount = 0;
+}
+
+void CanvasView::clearNodeHandles()
+{
+    const auto handles = m_nodeHandles;
+    m_nodeHandles.clear();
+    for (QGraphicsItem *handle : handles) delete handle;
+}
+
+void CanvasView::rebuildNodeHandles()
+{
+    clearNodeHandles();
+    if (m_tool != Tool::Node) return;
+    for (QGraphicsItem *selected : scene()->selectedItems()) {
+        auto *pathItem = dynamic_cast<QGraphicsPathItem *>(selected);
+        if (!pathItem || selected->data(KindRole).toString() != QStringLiteral("path")) continue;
+        const QPainterPath path = pathItem->path();
+        for (int i = 0; i < path.elementCount(); ++i) {
+            const auto element = path.elementAt(i);
+            const bool control = element.type == QPainterPath::CurveToElement ||
+                                 element.type == QPainterPath::CurveToDataElement;
+            auto *handle = new PathNodeHandle(pathItem, i, control);
+            m_nodeHandles.append(handle);
+        }
+    }
+}
+
 void CanvasView::resizeEvent(QResizeEvent *event)
 {
     QGraphicsView::resizeEvent(event);
     Q_EMIT viewChanged();
 }
-
