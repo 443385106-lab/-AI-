@@ -36,12 +36,22 @@ $('reference').onchange=async e=>{if(e.target.files[0]){reference=await dataURL(
 
 document.querySelectorAll('[data-export]').forEach(b=>b.onclick=async()=>{try{const type=b.dataset.export,d=currentData(),svg=makeSVG(d);setStatus('正在导出 '+type.toUpperCase()+'…');if(type==='svg')await boardAPI.saveSVG(svg);else if(type==='cdr')await boardAPI.saveCDR({svg,cmyk:d.cmyk});else if(type==='pdf')await boardAPI.savePDF({html:pdfHtml(svg,d)});else await boardAPI.saveImage({ext:type,data:await rasterData(d,type)});setStatus('导出完成')}catch(e){setStatus('导出失败：'+e.message)}});
 
-function fillPolicyTypes(){const types=INDUSTRIES[$('industry').value]||[];$('policyTypes').innerHTML=types.map((x,i)=>`<option ${i===0?'selected':''}>${x}</option>`).join('')}
+function fillPolicyTypes(){const types=INDUSTRIES[$('industry').value]||[];$('policyTypes').innerHTML=types.map((x,i)=>`<option ${i===0?'selected':''}>${x}</option>`).join('');if(!$('policyName').value&&types[0])$('policyName').value=types[0]}
 function applyBoard(b){$('title').value=b.title;$('body').value=b.body;$('theme').value=b.theme||'red';$('width').value=b.recommended_width_cm||40;$('height').value=b.recommended_height_cm||60;$('sign').value=$('company').value;render();setStatus(b.review_note?`已排版；复核提示：${b.review_note}`:'AI内容已排版')}
 function showAIResults(){const box=$('aiResults');box.innerHTML=aiBoards.map((b,i)=>`<div class="result" data-index="${i}"><b>${i+1}. ${escapeXML(b.title)}</b><span>点击载入</span>${b.review_note?`<div class="review">需复核：${escapeXML(b.review_note)}</div>`:''}</div>`).join('');box.querySelectorAll('.result').forEach(x=>x.onclick=()=>applyBoard(aiBoards[+x.dataset.index]));if(aiBoards[0])applyBoard(aiBoards[0])}
-Object.keys(INDUSTRIES).forEach(x=>$('industry').add(new Option(x,x)));fillPolicyTypes();$('industry').addEventListener('change',fillPolicyTypes);
+Object.keys(INDUSTRIES).forEach(x=>$('industry').add(new Option(x,x)));fillPolicyTypes();$('industry').addEventListener('change',fillPolicyTypes);$('policyTypes').addEventListener('change',()=>{const x=$('policyTypes').selectedOptions[0];if(x)$('policyName').value=x.value});
 $('saveAI').onclick=async()=>{await boardAPI.saveAIConfig({endpoint:$('endpoint').value.trim(),model:$('model').value.trim(),apiKey:$('apiKey').value.trim()});setStatus('AI连接设置已保存在本机')};
-$('aiGenerate').onclick=async()=>{const types=[...$('policyTypes').selectedOptions].map(x=>x.value);if(!types.length)return setStatus('请至少选择一种制度类型');try{$('aiGenerate').disabled=true;setStatus('AI正在生成制度内容…');const data=await boardAPI.generateAI({endpoint:$('endpoint').value.trim(),model:$('model').value.trim(),apiKey:$('apiKey').value.trim(),industry:$('industry').value,types,count:+$('boardCount').value,words:+$('words').value,company:$('company').value.trim(),requirements:$('requirements').value.trim()});aiBoards=(data.boards||[]).slice(0,20);showAIResults();setStatus(`AI已生成 ${aiBoards.length} 张独立展板`)}catch(e){setStatus('AI生成失败：'+e.message)}finally{$('aiGenerate').disabled=false}};
+async function generateBoards(advanced=false){
+  const name=$('policyName').value.trim(),selected=[...$('policyTypes').selectedOptions].map(x=>x.value),types=advanced?selected:(name?[name]:[]);
+  if(!types.length)return setStatus('请输入需要制作的制度名称');
+  if(!$('apiKey').value.trim())return setStatus('请先展开“AI连接设置”并填写API密钥');
+  const button=advanced?$('aiGenerate'):$('quickGenerate');
+  try{button.disabled=true;setStatus(`正在生成“${name||types[0]}”并自动排版…`);const data=await boardAPI.generateAI({endpoint:$('endpoint').value.trim(),model:$('model').value.trim(),apiKey:$('apiKey').value.trim(),policyName:name,autoMode:!advanced,industry:advanced?$('industry').value:'自动识别',types,count:advanced?+$('boardCount').value:1,words:+$('words').value,company:$('company').value.trim(),requirements:$('requirements').value.trim()});aiBoards=(data.boards||[]).slice(0,20);showAIResults();setStatus(`已生成并排版 ${aiBoards.length} 张展板`)}catch(e){setStatus('AI生成失败：'+e.message)}finally{button.disabled=false}
+}
+$('quickGenerate').onclick=()=>generateBoards(false);
+$('aiGenerate').onclick=()=>generateBoards(true);
+$('policyName').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();generateBoards(false)}});
+document.querySelectorAll('[data-policy]').forEach(b=>b.onclick=()=>{$('policyName').value=b.dataset.policy;$('policyName').focus()});
 
 $('ocrButton').onclick=async()=>{if(!reference)return setStatus('请先上传样图');try{$('ocrButton').disabled=true;setStatus('正在进行中文OCR识别…');const r=await boardAPI.ocrImage(reference),lines=r.text.split(/\n/).map(x=>x.trim()).filter(Boolean);if(lines.length){if(lines[0].length<=32)$('title').value=lines.shift();$('body').value=lines.join('\n');render()}setStatus(`OCR完成，平均置信度 ${Math.round(r.confidence)}%`)}catch(e){setStatus('OCR失败：'+e.message)}finally{$('ocrButton').disabled=false}};
 function colorDistance(a,b){return Math.hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2])}

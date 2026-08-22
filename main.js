@@ -48,7 +48,8 @@ ipcMain.handle('ai-generate',async(_,arg)=>{
   const endpoint=arg.endpoint||'https://api.openai.com/v1/responses';
   const board={type:'object',properties:{title:{type:'string'},body:{type:'string'},theme:{type:'string',enum:['red','blue','green','coffee']},recommended_width_cm:{type:'number'},recommended_height_cm:{type:'number'},review_note:{type:'string'}},required:['title','body','theme','recommended_width_cm','recommended_height_cm','review_note'],additionalProperties:false};
   const schema={type:'object',properties:{boards:{type:'array',items:board}},required:['boards'],additionalProperties:false};
-  const prompt=`你是中国企事业单位制度牌内容编辑与视觉排版助手。行业：${arg.industry}；制度类型：${arg.types.join('、')}；生成${arg.count}张；每张约${arg.words}字；落款：${arg.company||'未指定'}；补充要求：${arg.requirements||'无'}。每项独立成板，条款清晰，语言正式，不虚构证照或责任人；涉及法规、医疗、消防、危化等内容时在review_note提醒人工复核。正文用中文序号和换行，不要Markdown。`;
+  const requested=(arg.types||[]).filter(Boolean),policyName=arg.policyName||requested[0]||'管理制度';
+  const prompt=`你是服务图文广告公司的中国企事业单位制度展板内容编辑与排版助手。客户只提供了制度名称“${policyName}”。${arg.autoMode?'请自动判断适用行业、使用场景和常见展板规格。':`行业模板：${arg.industry}；制度类型：${requested.join('、')}。`}生成${arg.count||1}张，每张约${arg.words||450}字；落款：${arg.company||'未指定'}；补充要求：${arg.requirements||'无'}。标题优先严格采用客户提供的制度名称；正文整理为6—10条适合上墙展示的简洁条款，使用中文序号和换行，不要Markdown。theme应按行业视觉习惯自动选择；recommended_width_cm和recommended_height_cm应选择图文店常用成品尺寸。不要虚构证照、法规条文编号或具体责任人；涉及法规、医疗、消防、危化、食品等内容时在review_note明确提醒交付前人工复核。`;
   const headers={'Content-Type':'application/json'};if(arg.apiKey)headers.Authorization=`Bearer ${arg.apiKey}`;
   const payload={model:arg.model||'gpt-5.6-luna',input:[{role:'system',content:'输出严格符合JSON Schema的制度展板数据。'},{role:'user',content:prompt}],text:{format:{type:'json_schema',name:'board_set',strict:true,schema}},max_output_tokens:12000};
   const res=await fetch(endpoint,{method:'POST',headers,body:JSON.stringify(payload)});const raw=await res.text();if(!res.ok)throw new Error(`AI接口错误 ${res.status}：${raw.slice(0,300)}`);
